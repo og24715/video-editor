@@ -21,15 +21,20 @@ export interface MediaMeta {
   hasAudio: boolean;
 }
 
+export type MediaKind = "video" | "image";
+
 export interface Clip {
   id: string;
+  kind: MediaKind;
   file: File;
   url: string;
-  input: Input;
+  input: Input | null;
   meta: MediaMeta;
   crop: CropRect;
   trim: TrimRange;
 }
+
+export const DEFAULT_IMAGE_DURATION_SEC = 5;
 
 export type AspectPreset = "free" | "16:9" | "9:16" | "1:1" | "4:3";
 
@@ -64,6 +69,12 @@ export interface TimelineItem {
   rect: TileRect | null;
   trim: TrimRange;
   crop: CropRect;
+  durationSec: number | null;
+}
+
+export function timelineItemDurationSec(item: TimelineItem, clip: Clip): number {
+  if (clip.kind === "image") return Math.max(0, item.durationSec ?? DEFAULT_IMAGE_DURATION_SEC);
+  return Math.max(0, item.trim.endSec - item.trim.startSec);
 }
 
 export interface TimelineTrack {

@@ -8,7 +8,7 @@ import {
   Output,
 } from "mediabunny";
 import type { AudioCodec, Input, InputVideoTrack } from "mediabunny";
-import type { CropRect, TileRect, TrimRange } from "./model";
+import type { CropRect, MediaKind, TileRect, TrimRange } from "./model";
 import { containRect } from "./model";
 import { ExportCancelledError, chooseCodec } from "./exporter";
 import { FramePump, clampRange } from "./compositeExporter";
@@ -18,15 +18,21 @@ function sleep(ms: number): Promise<void> {
 }
 
 export interface TimelineBaseItemSpec {
-  input: Input;
+  kind: MediaKind;
+  input: Input | null;
+  file: File | null;
   trim: TrimRange;
   crop: CropRect;
+  durationSec?: number;
 }
 
 export interface TimelineOverlayItemSpec {
-  input: Input;
+  kind: MediaKind;
+  input: Input | null;
+  file: File | null;
   trim: TrimRange;
   crop: CropRect;
+  durationSec?: number;
   startSec: number;
   rect: TileRect;
 }
@@ -48,8 +54,10 @@ export interface TimelineExportResult {
 }
 
 interface ResolvedItem {
-  input: Input;
-  track: InputVideoTrack;
+  kind: MediaKind;
+  input: Input | null;
+  track: InputVideoTrack | null;
+  bitmap: ImageBitmap | null;
   trim: TrimRange;
   crop: CropRect;
   startSec: number;
@@ -73,19 +81,42 @@ export async function exportTimeline(options: TimelineExportOptions): Promise<Ti
     rect: TileRect | null,
     isBase: boolean,
   ): Promise<ResolvedItem> => {
+    const resolvedRect = rect ?? containRect(spec.crop.width, spec.crop.height, outWidth, outHeight);
+    if (spec.kind === "image") {
+      if (!spec.file) throw new Error("An image timeline item is missing its file.");
+      const bitmap = await createImageBitmap(spec.file);
+      const durationSec = Math.max(0.1, spec.durationSec ?? 0);
+      const resolved: ResolvedItem = {
+        kind: "image",
+        input: null,
+        track: null,
+        bitmap,
+        trim: { startSec: 0, endSec: durationSec },
+        crop: spec.crop,
+        startSec,
+        durationSec,
+        rect: resolvedRect,
+        isBase,
+      };
+      outputDuration = Math.max(outputDuration, startSec + durationSec);
+      return resolved;
+    }
+    if (!spec.input) throw new Error("A video timeline item is missing its input.");
     const track = await spec.input.getPrimaryVideoTrack();
     if (!track) throw new Error("No video track was found in one of the timeline files.");
     const duration = await spec.input.computeDuration();
     const trim = clampRange(spec.trim, duration);
     const durationSec = trim.endSec - trim.startSec;
     const resolved: ResolvedItem = {
+      kind: "video",
       input: spec.input,
       track,
+      bitmap: null,
       trim,
       crop: spec.crop,
       startSec,
       durationSec,
-      rect: rect ?? containRect(spec.crop.width, spec.crop.height, outWidth, outHeight),
+      rect: resolvedRect,
       isBase,
     };
     outputDuration = Math.max(outputDuration, startSec + durationSec);
@@ -107,16 +138,20 @@ export async function exportTimeline(options: TimelineExportOptions): Promise<Ti
   }
   if (!(outputDuration > 0)) throw new Error("Nothing to export: all timeline ranges are empty.");
 
-  const clockItem = items.find((item) => item.isBase) ?? items[0];
-  const stats = await clockItem.track.computePacketStats(50).catch(() => null);
+  const clockItem = items.find((item) => item.isBase && item.track) ?? items.find((item) => item.track) ?? null;
+  const stats = clockItem && clockItem.track ? await clockItem.track.computePacketStats(50).catch(() => null) : null;
   const framerate = stats && stats.averagePacketRate > 0 ? Math.max(1, Math.min(120, Math.round(stats.averagePacketRate))) : 30;
   const frameDurUs = Math.round(1_000_000 / framerate);
   const totalFrames = Math.max(1, Math.ceil(outputDuration * framerate - 1e-6));
   const bitrate = Math.max(1_000_000, Math.min(25_000_000, Math.round(outWidth * outHeight * framerate * 0.15)));
   const choice = await chooseCodec(outWidth, outHeight, framerate, bitrate);
 
-  const configs: VideoDecoderConfig[] = [];
+  const configs: (VideoDecoderConfig | null)[] = [];
   for (const item of items) {
+    if (!item.track) {
+      configs.push(null);
+      continue;
+    }
     const config = await item.track.getDecoderConfig();
     if (!config) throw new Error("Could not read a timeline video decoder configuration.");
     const support = await VideoDecoder.isConfigSupported(config).catch(() => null);
@@ -133,7 +168,7 @@ export async function exportTimeline(options: TimelineExportOptions): Promise<Ti
   const audioPlan: AudioPlanItem[] = [];
   let audioCodec: AudioCodec | null = null;
   for (const item of items) {
-    if (!item.isBase) continue;
+    if (!item.isBase || !item.input) continue;
     const audioTrack = await item.input.getPrimaryAudioTrack();
     if (!audioTrack || !audioTrack.codec) continue;
     if (audioCodec === null) audioCodec = audioTrack.codec;
@@ -200,10 +235,12 @@ export async function exportTimeline(options: TimelineExportOptions): Promise<Ti
   });
   encoder.configure(choice.config);
 
-  const pumps = items.map(
-    (item, i) => new FramePump(new EncodedPacketSink(item.track), configs[i], item.trim.startSec, item.trim.endSec, shouldStop, noteFailure),
-  );
-  for (const pump of pumps) await pump.init();
+  const pumps = items.map((item, i) => {
+    const config = configs[i];
+    if (!item.track || !config) return null;
+    return new FramePump(new EncodedPacketSink(item.track), config, item.trim.startSec, item.trim.endSec, shouldStop, noteFailure);
+  });
+  for (const pump of pumps) if (pump) await pump.init();
 
   try {
     for (let i = 0; i < totalFrames; i++) {
@@ -215,12 +252,18 @@ export async function exportTimeline(options: TimelineExportOptions): Promise<Ti
         const item = items[k];
         const local = t - item.startSec;
         if (local < -0.0005 || local >= item.durationSec) continue;
+        const crop = item.crop;
+        if (item.bitmap) {
+          ctx.drawImage(item.bitmap, crop.x, crop.y, crop.width, crop.height, item.rect.x, item.rect.y, item.rect.width, item.rect.height);
+          continue;
+        }
+        const pump = pumps[k];
+        if (!pump) continue;
         const sourceTime = item.trim.startSec + Math.max(0, local);
-        await pumps[k].advanceTo(sourceTime);
+        await pump.advanceTo(sourceTime);
         if (shouldStop()) break;
-        const frame = pumps[k].current;
+        const frame = pump.current;
         if (frame) {
-          const crop = item.crop;
           ctx.drawImage(frame, crop.x, crop.y, crop.width, crop.height, item.rect.x, item.rect.y, item.rect.width, item.rect.height);
         }
       }
@@ -237,7 +280,8 @@ export async function exportTimeline(options: TimelineExportOptions): Promise<Ti
     noteFailure(err);
   }
 
-  for (const pump of pumps) pump.close();
+  for (const pump of pumps) if (pump) pump.close();
+  for (const item of items) if (item.bitmap) item.bitmap.close();
 
   if (options.isCancelled()) {
     try {

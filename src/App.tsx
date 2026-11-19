@@ -13,7 +13,7 @@ import { VStack } from "@astryxdesign/core/VStack";
 import { Spinner } from "@astryxdesign/core/Spinner";
 import { FolderOpen } from "lucide-react";
 import type { AspectPreset, Clip, CropRect, LayoutTile, MediaMeta, TileRect, TimelineItem, TimelineState, TimelineTrack, TrimRange } from "./model";
-import { clampOutputSize, containRect, evenRect, pipItemRect, refitRectToAspect, resizedTiles } from "./model";
+import { DEFAULT_IMAGE_DURATION_SEC, clampOutputSize, containRect, evenRect, pipItemRect, refitRectToAspect, resizedTiles, timelineItemDurationSec } from "./model";
 import { ExportCancelledError, exportCropped, openInput, readMeta, webCodecsSupported } from "./exporter";
 import { exportTimeline } from "./timelineExporter";
 import { exportGif, gifOutputSize } from "./gifExporter";
@@ -249,7 +249,7 @@ function layoutTimeline(
     for (const item of track.items) {
       const itemClip = clips.find((c) => c.id === item.clipId);
       if (!itemClip) continue;
-      const durationSec = Math.max(0, item.trim.endSec - item.trim.startSec);
+      const durationSec = timelineItemDurationSec(item, itemClip);
       const startSec = trackIndex === 0 ? cursor : Math.max(0, item.startSec);
       cursor += durationSec;
       const endSec = startSec + durationSec;
@@ -389,6 +389,8 @@ export default function App() {
     origTrim: TrimRange;
     origStartSec: number;
     clipDurationSec: number;
+    isImage: boolean;
+    origDurationSec: number;
   } | null>(null);
   const tlClockRef = useRef<number | null>(null);
   const tlThumbsPendingRef = useRef<Set<string>>(new Set());
@@ -464,14 +466,35 @@ export default function App() {
   }, []);
 
   const createClip = useCallback(async (file: File): Promise<Clip> => {
+    const isImage =
+      /^image\/(png|jpeg|webp)$/.test(file.type) || /\.(png|jpe?g|webp)$/i.test(file.name);
+    if (isImage) {
+      const bitmap = await createImageBitmap(file).catch(() => null);
+      if (!bitmap) throw new Error(`"${file.name}" could not be read as an image.`);
+      const width = bitmap.width;
+      const height = bitmap.height;
+      bitmap.close();
+      const url = URL.createObjectURL(file);
+      return {
+        id: nextClipId(),
+        kind: "image",
+        file,
+        url,
+        input: null,
+        meta: { width, height, durationSec: 0, videoCodec: null, audioCodec: null, hasAudio: false },
+        crop: { x: 0, y: 0, width, height },
+        trim: { startSec: 0, endSec: 0 },
+      };
+    }
     if (!/\.mp4$/i.test(file.name) && file.type !== "video/mp4") {
-      throw new Error(`"${file.name}" is not an MP4 file.`);
+      throw new Error(`"${file.name}" is not an MP4 video or a PNG/JPEG/WebP image.`);
     }
     const input = await openInput(file);
     const meta = await readMeta(input);
     const url = URL.createObjectURL(file);
     return {
       id: nextClipId(),
+      kind: "video",
       file,
       url,
       input,
@@ -489,16 +512,22 @@ export default function App() {
       setLoading(true);
       try {
         const created: Clip[] = [];
+        const failures: string[] = [];
         for (const file of files) {
-          created.push(await createClip(file));
+          try {
+            created.push(await createClip(file));
+          } catch (err) {
+            failures.push(err instanceof Error ? err.message : String(err));
+          }
         }
-        setClips((prev) => [...prev, ...created]);
-        setActiveClipId((prev) => prev ?? created[0].id);
-        if (clipsRef.current.length === 0) {
-          setAspect("free");
+        if (created.length > 0) {
+          setClips((prev) => [...prev, ...created]);
+          setActiveClipId((prev) => prev ?? created[0].id);
+          if (clipsRef.current.length === 0) {
+            setAspect("free");
+          }
         }
-      } catch (err) {
-        setError(err instanceof Error ? err.message : String(err));
+        if (failures.length > 0) setError(failures.join(" "));
       } finally {
         setLoading(false);
       }
@@ -506,17 +535,10 @@ export default function App() {
     [createClip],
   );
 
-  const loadFile = useCallback(
-    async (file: File) => {
-      await addFiles([file]);
-    },
-    [addFiles],
-  );
-
   const removeClip = useCallback((clipId: string) => {
     const target = clipsRef.current.find((c) => c.id === clipId);
     if (target) {
-      target.input.dispose();
+      target.input?.dispose();
       URL.revokeObjectURL(target.url);
     }
     setClips((prev) => prev.filter((c) => c.id !== clipId));
@@ -596,6 +618,13 @@ export default function App() {
       const now = performance.now();
       const dt = (now - last) / 1000;
       last = now;
+      const baseEntry = data.tracks[0]?.items.find(
+        (e) => tlGlobalRef.current >= e.startSec && tlGlobalRef.current < e.startSec + e.durationSec,
+      );
+      if (baseEntry && baseEntry.clip.kind === "video") {
+        const el = tlVideoRefs.current.get(baseEntry.item.id);
+        if (el && !el.paused) return;
+      }
       let global = tlGlobalRef.current + dt;
       if (global >= data.totalSec) {
         global = data.totalSec;
@@ -643,7 +672,7 @@ export default function App() {
     for (const track of timeline.tracks) {
       for (const item of track.items) {
         const itemClip = clips.find((c) => c.id === item.clipId);
-        if (!itemClip) continue;
+        if (!itemClip || itemClip.kind !== "video") continue;
         const key = `${itemClip.id}|${item.trim.startSec}|${item.trim.endSec}`;
         if (!tlThumbs[key] && !tlThumbsPendingRef.current.has(key)) needed.set(key, { itemClip, trim: item.trim });
       }
@@ -794,7 +823,15 @@ export default function App() {
     if (!target) return;
     const itemCrop: CropRect = { x: 0, y: 0, width: target.meta.width, height: target.meta.height };
     const sized = evenRect(itemCrop, target.meta.width, target.meta.height);
-    const item: TimelineItem = { id: nextTlId("tlitem"), clipId, startSec: 0, rect: null, trim: { ...target.trim }, crop: itemCrop };
+    const item: TimelineItem = {
+      id: nextTlId("tlitem"),
+      clipId,
+      startSec: 0,
+      rect: null,
+      trim: { ...target.trim },
+      crop: itemCrop,
+      durationSec: target.kind === "image" ? DEFAULT_IMAGE_DURATION_SEC : null,
+    };
     setTimeline((prev) => {
       const base: TimelineState =
         prev ?? { outputWidth: 0, outputHeight: 0, tracks: [{ id: nextTlId("track"), items: [] }] };
@@ -834,6 +871,7 @@ export default function App() {
           rect,
           trim: { ...target.trim },
           crop: itemCrop,
+          durationSec: target.kind === "image" ? DEFAULT_IMAGE_DURATION_SEC : null,
         };
         return {
           ...withSize,
@@ -867,6 +905,7 @@ export default function App() {
           rect,
           trim: { ...target.trim },
           crop: itemCrop,
+          durationSec: target.kind === "image" ? DEFAULT_IMAGE_DURATION_SEC : null,
         };
         return { ...withSize, tracks: [...withSize.tracks, { id: nextTlId("track"), items: [item] }] };
       });
@@ -1008,6 +1047,8 @@ export default function App() {
       origTrim: { ...entry.item.trim },
       origStartSec: entry.item.startSec,
       clipDurationSec: entry.clip.meta.durationSec,
+      isImage: entry.clip.kind === "image",
+      origDurationSec: entry.durationSec,
     };
     (event.currentTarget as HTMLElement).setPointerCapture(event.pointerId);
   };
@@ -1016,6 +1057,16 @@ export default function App() {
     const drag = tlEdgeDragRef.current;
     if (!drag || drag.rowWidth <= 0 || drag.totalSec <= 0) return;
     const dxSec = ((event.clientX - drag.startClientX) / drag.rowWidth) * drag.totalSec;
+    if (drag.isImage) {
+      if (drag.edge === "end") {
+        const next = Math.round(Math.max(0.1, drag.origDurationSec + dxSec) * 1000) / 1000;
+        updateTlItem(drag.trackIndex, drag.itemId, { durationSec: next });
+      } else if (drag.trackIndex > 0) {
+        const next = Math.max(0, Math.round((drag.origStartSec + dxSec) * 10) / 10);
+        updateTlItem(drag.trackIndex, drag.itemId, { startSec: next });
+      }
+      return;
+    }
     const nextRaw =
       drag.edge === "start"
         ? { ...drag.origTrim, startSec: drag.origTrim.startSec + dxSec }
@@ -1055,7 +1106,7 @@ export default function App() {
     tlPlayingRef.current = true;
     setTlPlaying(true);
     const baseEntry = data.tracks[0]?.items.find((e) => global >= e.startSec && global < e.startSec + e.durationSec);
-    if (baseEntry) {
+    if (baseEntry && baseEntry.clip.kind === "video") {
       const el = tlVideoRefs.current.get(baseEntry.item.id);
       if (el) {
         const target = baseEntry.item.trim.startSec + (global - baseEntry.startSec);
@@ -1171,18 +1222,24 @@ export default function App() {
         timeline.outputWidth > 0;
       if (tlExportReady && timeline && tlData) {
         const baseSpecs = tlData.tracks[0].items.map((entry) => ({
+          kind: entry.clip.kind,
           input: entry.clip.input,
+          file: entry.clip.file,
           trim: entry.item.trim,
           crop: evenRect(entry.item.crop, entry.clip.meta.width, entry.clip.meta.height),
+          durationSec: entry.clip.kind === "image" ? entry.durationSec : undefined,
         }));
         const overlaySpecs = [];
         for (let ti = 1; ti < tlData.tracks.length; ti++) {
           for (const entry of tlData.tracks[ti].items) {
             if (!entry.item.rect) continue;
             overlaySpecs.push({
+              kind: entry.clip.kind,
               input: entry.clip.input,
+              file: entry.clip.file,
               trim: entry.item.trim,
               crop: evenRect(entry.item.crop, entry.clip.meta.width, entry.clip.meta.height),
+              durationSec: entry.clip.kind === "image" ? entry.durationSec : undefined,
               startSec: entry.startSec,
               rect: entry.item.rect,
             });
@@ -1205,6 +1262,10 @@ export default function App() {
         setResultTimeline(true);
         suggested = `${clip.file.name.replace(/\.mp4$/i, "")}-timeline.mp4`;
         pickerType = { description: "MP4 video", accept: { "video/mp4": [".mp4"] } };
+      } else if (clip.kind === "image" || !clip.input) {
+        setError("Images are used on the timeline. Add this image to the timeline, then export the timeline as MP4.");
+        setExporting(false);
+        return;
       } else if (exportFormat === "gif") {
         const res = await exportGif({
           input: clip.input,
@@ -1303,6 +1364,7 @@ export default function App() {
   const tlTotalSec = tlLayout.totalSec;
   const timelineExporting =
     tlLayout.tracks.some((t) => t.items.length > 0) && timeline.outputWidth > 0;
+  const singleImageActive = !timelineExporting && clip !== null && clip.kind === "image";
   const activeBaseEntry = (() => {
     if (!tlLayout || tlLayout.tracks.length === 0) return null;
     const baseItems = tlLayout.tracks[0].items;
@@ -1465,10 +1527,10 @@ export default function App() {
             >
               <div className="pool-header">
                 <Heading level={4}>Media</Heading>
-                <Text type="supporting">{clips.length} video{clips.length === 1 ? "" : "s"}</Text>
+                <Text type="supporting">{clips.length} item{clips.length === 1 ? "" : "s"}</Text>
               </div>
               <Button
-                label="Add videos"
+                label="Add media"
                 variant="primary"
                 onClick={() => poolFileInputRef.current?.click()}
                 isDisabled={loading}
@@ -1476,7 +1538,7 @@ export default function App() {
               <input
                 ref={poolFileInputRef}
                 type="file"
-                accept="video/mp4,.mp4"
+                accept="video/mp4,.mp4,image/png,image/jpeg,image/webp,.png,.jpg,.jpeg,.webp"
                 multiple
                 style={{ display: "none" }}
                 onChange={(e) => {
@@ -1486,7 +1548,7 @@ export default function App() {
                 }}
               />
               {clips.length === 0 && (
-                <Text type="supporting">No videos yet. Add videos here, or drop MP4 files onto this column.</Text>
+                <Text type="supporting">No media yet. Add MP4 videos or PNG/JPEG/WebP images here, or drop files onto this column.</Text>
               )}
               <div className="pool-items">
                 {clips.map((item) => (
@@ -1504,14 +1566,23 @@ export default function App() {
                       setActiveClipId(item.id);
                     }}
                     onDoubleClick={() => {
+                      if (item.kind !== "video") return;
                       setCropClipId(item.id);
                       setDrawerItemId(null);
                     }}
                   >
-                    <video className="pool-thumb" src={item.url} preload="metadata" muted playsInline />
+                    {item.kind === "image" ? (
+                      <img className="pool-thumb" src={item.url} alt="" draggable={false} />
+                    ) : (
+                      <video className="pool-thumb" src={item.url} preload="metadata" muted playsInline />
+                    )}
                     <div className="pool-item-name">{item.file.name}</div>
                     <div className="pool-item-meta">
-                      <span>{fmtDuration(item.meta.durationSec)}</span>
+                      {item.kind === "image" ? (
+                        <span className="pool-tag">Image</span>
+                      ) : (
+                        <span>{fmtDuration(item.meta.durationSec)}</span>
+                      )}
                       <span>
                         {item.meta.width} × {item.meta.height}
                       </span>
@@ -1531,7 +1602,7 @@ export default function App() {
                 ))}
               </div>
               {clips.length > 0 && (
-                <Text type="supporting">Drag a video onto the preview to add it to the timeline. Double-click a video to edit its crop and trim.</Text>
+                <Text type="supporting">Drag media onto the preview to add it to the timeline. Double-click a video to edit its crop and trim; an image is edited on its timeline clip.</Text>
               )}
             </aside>
             <div className="editor-column">
@@ -1570,19 +1641,20 @@ export default function App() {
               >
                 <VStack gap={3}>
                   {loading ? <Spinner /> : <FolderOpen size={36} />}
-                  <Heading level={3}>Drop MP4 files here</Heading>
-                  <Text type="supporting">or click to choose a file. Everything is processed locally in your browser.</Text>
+                  <Heading level={3}>Drop video or image files here</Heading>
+                  <Text type="supporting">MP4 videos, or PNG/JPEG/WebP images. Or click to choose files. Everything is processed locally in your browser.</Text>
                 </VStack>
               </div>
             )}
             <input
               ref={fileInputRef}
               type="file"
-              accept="video/mp4,.mp4"
+              accept="video/mp4,.mp4,image/png,image/jpeg,image/webp,.png,.jpg,.jpeg,.webp"
+              multiple
               style={{ display: "none" }}
               onChange={(e) => {
-                const file = e.target.files?.[0];
-                if (file) void loadFile(file);
+                const files = Array.from(e.target.files ?? []);
+                if (files.length > 0) void addFiles(files);
                 e.target.value = "";
               }}
             />
@@ -1609,15 +1681,24 @@ export default function App() {
                             key={activeBaseEntry.item.id}
                             style={baseVideoBoxStyle(activeBaseEntry.clip.meta, activeBaseEntry.item.crop, timeline.outputWidth, timeline.outputHeight)}
                           >
-                            <video
-                              ref={(el) => {
-                                if (el) tlVideoRefs.current.set(activeBaseEntry.item.id, el);
-                                else tlVideoRefs.current.delete(activeBaseEntry.item.id);
-                              }}
-                              src={activeBaseEntry.clip.url}
-                              playsInline
-                              style={subRectVideoStyle(activeBaseEntry.clip.meta, activeBaseEntry.item.crop)}
-                            />
+                            {activeBaseEntry.clip.kind === "image" ? (
+                              <img
+                                src={activeBaseEntry.clip.url}
+                                alt=""
+                                draggable={false}
+                                style={subRectVideoStyle(activeBaseEntry.clip.meta, activeBaseEntry.item.crop)}
+                              />
+                            ) : (
+                              <video
+                                ref={(el) => {
+                                  if (el) tlVideoRefs.current.set(activeBaseEntry.item.id, el);
+                                  else tlVideoRefs.current.delete(activeBaseEntry.item.id);
+                                }}
+                                src={activeBaseEntry.clip.url}
+                                playsInline
+                                style={subRectVideoStyle(activeBaseEntry.clip.meta, activeBaseEntry.item.crop)}
+                              />
+                            )}
                           </div>
                         )}
                         {tlLayout.tracks.slice(1).flatMap((trackLayout, ti) =>
@@ -1649,16 +1730,25 @@ export default function App() {
                                 onPointerUp={endTlTileDrag}
                                 onPointerCancel={endTlTileDrag}
                               >
-                                <video
-                                  ref={(el) => {
-                                    if (el) tlVideoRefs.current.set(entry.item.id, el);
-                                    else tlVideoRefs.current.delete(entry.item.id);
-                                  }}
-                                  src={entry.clip.url}
-                                  playsInline
-                                  muted
-                                  style={subRectVideoStyle(entry.clip.meta, entry.item.crop)}
-                                />
+                                {entry.clip.kind === "image" ? (
+                                  <img
+                                    src={entry.clip.url}
+                                    alt=""
+                                    draggable={false}
+                                    style={subRectVideoStyle(entry.clip.meta, entry.item.crop)}
+                                  />
+                                ) : (
+                                  <video
+                                    ref={(el) => {
+                                      if (el) tlVideoRefs.current.set(entry.item.id, el);
+                                      else tlVideoRefs.current.delete(entry.item.id);
+                                    }}
+                                    src={entry.clip.url}
+                                    playsInline
+                                    muted
+                                    style={subRectVideoStyle(entry.clip.meta, entry.item.crop)}
+                                  />
+                                )}
                                 {isSelected && (
                                   <div
                                     className="composite-tile-handle"
@@ -1676,7 +1766,11 @@ export default function App() {
                     </div>
                   ) : (
                   <div className="stage">
-                    <video ref={videoRef} src={clip.url} controls playsInline />
+                    {clip.kind === "image" ? (
+                      <img src={clip.url} alt="" draggable={false} />
+                    ) : (
+                      <video ref={videoRef} src={clip.url} controls playsInline />
+                    )}
                   </div>
                   )}
                 </div>
@@ -1711,9 +1805,10 @@ export default function App() {
                     isDisabled={exporting}
                   >
                     <SegmentedControlItem value="mp4" label="MP4" />
-                    <SegmentedControlItem value="gif" label="GIF" isDisabled={timelineExporting} />
+                    <SegmentedControlItem value="gif" label="GIF" isDisabled={timelineExporting || singleImageActive} />
                   </SegmentedControl>
                   {timelineExporting && <Text type="supporting">Timeline: MP4 only</Text>}
+                  {singleImageActive && <Text type="supporting">Images are used on the timeline</Text>}
                   {exporting ? (
                     <Button
                       label="Cancel"
@@ -1727,7 +1822,7 @@ export default function App() {
                       label={!timelineExporting && exportFormat === "gif" ? "Export GIF" : "Export MP4"}
                       variant="primary"
                       onClick={() => void runExport()}
-                      isDisabled={!supported}
+                      isDisabled={!supported || singleImageActive}
                     />
                   )}
                 </div>
@@ -1885,24 +1980,30 @@ export default function App() {
                                     }}
                                   >
                                     <div className="tl-thumbs">
-                                      {(
-                                        tlThumbs[`${entry.clip.id}|${entry.item.trim.startSec}|${entry.item.trim.endSec}`] ??
-                                        []
-                                      ).map((src, i) => (
-                                        <img key={i} src={src} alt="" draggable={false} />
-                                      ))}
+                                      {entry.clip.kind === "image" ? (
+                                        <img className="tl-block-img" src={entry.clip.url} alt="" draggable={false} />
+                                      ) : (
+                                        (
+                                          tlThumbs[`${entry.clip.id}|${entry.item.trim.startSec}|${entry.item.trim.endSec}`] ??
+                                          []
+                                        ).map((src, i) => (
+                                          <img key={i} src={src} alt="" draggable={false} />
+                                        ))
+                                      )}
                                     </div>
                                     <div className="tl-block-label">
                                       {entry.clip.file.name} · {fmtSec(entry.durationSec)}
                                     </div>
-                                    <div
-                                      className="tl-block-edge left"
-                                      data-tl-edge="start"
-                                      onPointerDown={(e) => beginTlEdgeDrag(e, 0, entry, "start")}
-                                      onPointerMove={onTlEdgeDragMove}
-                                      onPointerUp={endTlEdgeDrag}
-                                      onPointerCancel={endTlEdgeDrag}
-                                    />
+                                    {entry.clip.kind === "video" && (
+                                      <div
+                                        className="tl-block-edge left"
+                                        data-tl-edge="start"
+                                        onPointerDown={(e) => beginTlEdgeDrag(e, 0, entry, "start")}
+                                        onPointerMove={onTlEdgeDragMove}
+                                        onPointerUp={endTlEdgeDrag}
+                                        onPointerCancel={endTlEdgeDrag}
+                                      />
+                                    )}
                                     <div
                                       className="tl-block-edge right"
                                       data-tl-edge="end"
@@ -1949,13 +2050,17 @@ export default function App() {
                                       onPointerCancel={endTlBlockDrag}
                                     >
                                       <div className="tl-thumbs">
-                                        {(
-                                          tlThumbs[
-                                            `${entry.clip.id}|${entry.item.trim.startSec}|${entry.item.trim.endSec}`
-                                          ] ?? []
-                                        ).map((src, i) => (
-                                          <img key={i} src={src} alt="" draggable={false} />
-                                        ))}
+                                        {entry.clip.kind === "image" ? (
+                                          <img className="tl-block-img" src={entry.clip.url} alt="" draggable={false} />
+                                        ) : (
+                                          (
+                                            tlThumbs[
+                                              `${entry.clip.id}|${entry.item.trim.startSec}|${entry.item.trim.endSec}`
+                                            ] ?? []
+                                          ).map((src, i) => (
+                                            <img key={i} src={src} alt="" draggable={false} />
+                                          ))
+                                        )}
                                       </div>
                                       <div className="tl-block-label">
                                         {entry.clip.file.name} · {fmtSec(entry.durationSec)}
@@ -1994,8 +2099,8 @@ export default function App() {
                               {trackLayout.items.length === 0 && (
                                 <div className="tl-row-empty">
                                   {trackIndex === 0
-                                    ? "Drop videos here, or use Add to timeline in the panel."
-                                    : "Drop videos here to overlay them."}
+                                    ? "Drop media here, or use Add to timeline in the panel."
+                                    : "Drop media here to overlay it."}
                                 </div>
                               )}
                               <div
@@ -2009,7 +2114,8 @@ export default function App() {
                     <Text type="supporting">
                       {fmtSec(tlPlayheadSec)} / {fmtSec(tlTotalSec)} · Click a clip to select it; click a track to
                       seek. Drag base clips to reorder them; drag overlay clips sideways to move them in time. Drag
-                      a clip's edges to trim it; double-click a clip to edit its crop and trim.
+                      a clip's edges to trim it (an image clip's right edge sets its duration); double-click a clip
+                      to edit its crop and trim.
                     </Text>
                   </div>
                 )}
@@ -2019,9 +2125,15 @@ export default function App() {
                     <Text type="supporting">
                       Source: {clip.meta.width} × {clip.meta.height}
                     </Text>
-                    <Text type="supporting">Duration: {fmtDuration(clip.meta.durationSec)}</Text>
-                    <Text type="supporting">Video codec: {clip.meta.videoCodec ?? "unknown"}</Text>
-                    <Text type="supporting">Audio: {clip.meta.hasAudio ? (clip.meta.audioCodec ?? "yes") : "none"}</Text>
+                    {clip.kind === "image" ? (
+                      <Text type="supporting">Type: Image</Text>
+                    ) : (
+                      <>
+                        <Text type="supporting">Duration: {fmtDuration(clip.meta.durationSec)}</Text>
+                        <Text type="supporting">Video codec: {clip.meta.videoCodec ?? "unknown"}</Text>
+                        <Text type="supporting">Audio: {clip.meta.hasAudio ? (clip.meta.audioCodec ?? "yes") : "none"}</Text>
+                      </>
+                    )}
                   </div>
                   {timeline && (
                     <>
@@ -2145,7 +2257,40 @@ export default function App() {
                           </div>
                         </div>
                       ))}
-                      {selectedTl && (
+                      {selectedTl && selectedTl.entry.clip.kind === "image" && (
+                        <>
+                          <Text type="supporting">
+                            Selected clip: {selectedTl.entry.clip.file.name} (V{selectedTl.trackIndex + 1}
+                            {selectedTl.trackIndex === 0 ? " · Base" : ""}) · image
+                          </Text>
+                          <div className="field-row">
+                            <div className="field">
+                              <label htmlFor="tl-item-duration">Duration (s)</label>
+                              <input
+                                id="tl-item-duration"
+                                type="number"
+                                min={0.1}
+                                step={0.1}
+                                value={Math.round(selectedTl.entry.durationSec * 100) / 100}
+                                disabled={exporting}
+                                onChange={(e) => {
+                                  const value = Number(e.target.value);
+                                  if (Number.isFinite(value)) {
+                                    updateTlItem(selectedTl.trackIndex, selectedTl.entry.item.id, {
+                                      durationSec: Math.max(0.1, Math.round(value * 1000) / 1000),
+                                    });
+                                  }
+                                }}
+                              />
+                            </div>
+                          </div>
+                          <Text type="supporting">
+                            The image is shown for this long. Drag the clip's right edge on the timeline to change
+                            it, or double-click the clip to edit its crop.
+                          </Text>
+                        </>
+                      )}
+                      {selectedTl && selectedTl.entry.clip.kind === "video" && (
                         <>
                           <Text type="supporting">
                             Selected clip: {selectedTl.entry.clip.file.name} (V{selectedTl.trackIndex + 1}
@@ -2272,7 +2417,13 @@ export default function App() {
                       )}
                     </>
                   )}
-                  {!tlHasItems && (
+                  {!tlHasItems && clip.kind === "image" && (
+                    <Text type="supporting">
+                      This is an image. Images are used on the timeline: add it to the timeline, where each image
+                      clip has its own crop and duration, then export the timeline as MP4.
+                    </Text>
+                  )}
+                  {!tlHasItems && clip.kind === "video" && (
                     <>
                       <Text type="supporting">
                         {isFullFrame
@@ -2333,13 +2484,17 @@ export default function App() {
           <VStack gap={4}>
             <DrawerHeader
               title={cropClip.file.name}
-              subtitle="Crop & trim"
+              subtitle={cropClip.kind === "image" ? "Crop" : "Crop & trim"}
               onOpenChange={(open) => {
                 if (!open) closeDrawer();
               }}
             />
             <div className="drawer-stage" ref={drawerStageRef}>
-              <video ref={drawerVideoRef} src={cropClip.url} controls playsInline />
+              {cropClip.kind === "image" ? (
+                <img src={cropClip.url} alt="" draggable={false} />
+              ) : (
+                <video ref={drawerVideoRef} src={cropClip.url} controls playsInline />
+              )}
               <div
                 className="crop-rect"
                 style={{
@@ -2393,9 +2548,37 @@ export default function App() {
             </Text>
             <Text type="supporting">
               {drawerItem
-                ? "This crop belongs to this timeline item only; the source video's crop is unchanged."
+                ? `This crop belongs to this timeline item only; the source ${cropClip.kind === "image" ? "image" : "video"}'s crop is unchanged.`
                 : "Crop applies to all uses of this video."}
             </Text>
+            {cropClip.kind === "image" && drawerItem && (
+              <>
+                <Text type="supporting">Duration — timeline item (V{drawerItem.trackIndex + 1})</Text>
+                <div className="field-row">
+                  <div className="field">
+                    <label htmlFor="drawer-item-duration">Duration (s)</label>
+                    <input
+                      id="drawer-item-duration"
+                      type="number"
+                      min={0.1}
+                      step={0.1}
+                      value={Math.round((drawerItem.item.durationSec ?? DEFAULT_IMAGE_DURATION_SEC) * 100) / 100}
+                      onChange={(e) => {
+                        const value = Number(e.target.value);
+                        if (Number.isFinite(value)) {
+                          updateTlItem(drawerItem.trackIndex, drawerItem.item.id, {
+                            durationSec: Math.max(0.1, Math.round(value * 1000) / 1000),
+                          });
+                        }
+                      }}
+                    />
+                  </div>
+                </div>
+                <Text type="supporting">The image is shown for this long on the timeline.</Text>
+              </>
+            )}
+            {cropClip.kind === "video" && (
+              <>
             <Text type="supporting">
               Trim — {drawerItem ? `timeline item (V${drawerItem.trackIndex + 1})` : "this video"}
             </Text>
@@ -2438,6 +2621,8 @@ export default function App() {
                 ? "This trim belongs to this timeline item only; the source video's trim is unchanged. Trimming an overlay item's head shifts it so the remaining content stays in place."
                 : "This is the video's default trim: used by single-clip export, and copied into new timeline items."}
             </Text>
+              </>
+            )}
           </VStack>
         )}
       </Drawer>
