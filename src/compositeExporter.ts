@@ -7,17 +7,12 @@ import {
   Mp4OutputFormat,
   Output,
 } from "mediabunny";
-import type { Input } from "mediabunny";
-import type { CropRect, LayoutState, TrimRange } from "./model";
+import type { Input, InputVideoTrack } from "mediabunny";
+import type { CropRect, TileRect, TrimRange } from "./model";
 import { ExportCancelledError, chooseCodec } from "./exporter";
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-interface SourceSpec {
-  input: Input;
-  trim: TrimRange;
 }
 
 class FramePump {
@@ -121,10 +116,25 @@ class FramePump {
   }
 }
 
+export interface CompositeTileSpec {
+  input: Input;
+  trim: TrimRange;
+  crop: CropRect;
+  rect: TileRect;
+  offsetSec: number;
+}
+
+export interface CompositeAudioSpec {
+  input: Input;
+  trim: TrimRange;
+  offsetSec: number;
+}
+
 export interface CompositeExportOptions {
-  main: SourceSpec & { crop: CropRect };
-  second: SourceSpec;
-  layout: LayoutState;
+  tiles: CompositeTileSpec[];
+  outputWidth: number;
+  outputHeight: number;
+  audio: CompositeAudioSpec | null;
   onProgress: (ratio: number) => void;
   isCancelled: () => boolean;
 }
@@ -136,79 +146,65 @@ export interface CompositeExportResult {
   outputDurationSec: number;
 }
 
+function clampRange(trim: TrimRange, durationSec: number): TrimRange {
+  const start = Math.max(0, Math.min(trim.startSec, Math.max(0, durationSec - 0.1)));
+  const end = Math.max(start + 0.1, Math.min(trim.endSec, durationSec > 0 ? durationSec : trim.endSec));
+  return { startSec: start, endSec: end };
+}
+
 export async function exportComposite(options: CompositeExportOptions): Promise<CompositeExportResult> {
-  const { layout } = options;
-  const mainTrack = await options.main.input.getPrimaryVideoTrack();
-  if (!mainTrack) throw new Error("No video track was found in the main file.");
-  const secondTrack = await options.second.input.getPrimaryVideoTrack();
-  if (!secondTrack) throw new Error("No video track was found in the second file.");
+  if (options.tiles.length === 0) throw new Error("No tiles to export.");
 
-  const mainDuration = await options.main.input.computeDuration();
-  const secondDuration = await options.second.input.computeDuration();
+  const tracks: InputVideoTrack[] = [];
+  for (const tile of options.tiles) {
+    const track = await tile.input.getPrimaryVideoTrack();
+    if (!track) throw new Error("No video track was found in one of the tile files.");
+    tracks.push(track);
+  }
 
-  const clampRange = (trim: TrimRange, durationSec: number): TrimRange => {
-    const start = Math.max(0, Math.min(trim.startSec, Math.max(0, durationSec - 0.1)));
-    const end = Math.max(start + 0.1, Math.min(trim.endSec, durationSec > 0 ? durationSec : trim.endSec));
-    return { startSec: start, endSec: end };
-  };
-  const mainTrim = clampRange(options.main.trim, mainDuration);
-  const secondTrim = clampRange(options.second.trim, secondDuration);
-  const mainRange = mainTrim.endSec - mainTrim.startSec;
-  const secondRange = secondTrim.endSec - secondTrim.startSec;
-  const offset = Math.max(-10, Math.min(10, layout.offsetSec));
-  const outputDuration = Math.max(mainRange, offset + secondRange);
-  if (!(outputDuration > 0)) throw new Error("Nothing to export: both ranges are empty.");
+  const trims: TrimRange[] = [];
+  const ranges: number[] = [];
+  let outputDuration = 0;
+  for (let i = 0; i < options.tiles.length; i++) {
+    const duration = await options.tiles[i].input.computeDuration();
+    const trim = clampRange(options.tiles[i].trim, duration);
+    trims.push(trim);
+    const range = trim.endSec - trim.startSec;
+    ranges.push(range);
+    outputDuration = Math.max(outputDuration, options.tiles[i].offsetSec + range);
+  }
+  if (!(outputDuration > 0)) throw new Error("Nothing to export: all tile ranges are empty.");
 
-  const outWidth = Math.max(2, Math.round(layout.outputWidth) - (Math.round(layout.outputWidth) % 2));
-  const outHeight = Math.max(2, Math.round(layout.outputHeight) - (Math.round(layout.outputHeight) % 2));
-  const tileA = {
-    x: Math.round(layout.tileA.x),
-    y: Math.round(layout.tileA.y),
-    width: Math.max(2, Math.round(layout.tileA.width)),
-    height: Math.max(2, Math.round(layout.tileA.height)),
-  };
-  const tileB = {
-    x: Math.round(layout.tileB.x),
-    y: Math.round(layout.tileB.y),
-    width: Math.max(2, Math.round(layout.tileB.width)),
-    height: Math.max(2, Math.round(layout.tileB.height)),
-  };
-  const crop = options.main.crop;
+  const outWidth = Math.max(2, Math.round(options.outputWidth) - (Math.round(options.outputWidth) % 2));
+  const outHeight = Math.max(2, Math.round(options.outputHeight) - (Math.round(options.outputHeight) % 2));
+  const rects = options.tiles.map((tile) => ({
+    x: Math.round(tile.rect.x),
+    y: Math.round(tile.rect.y),
+    width: Math.max(2, Math.round(tile.rect.width)),
+    height: Math.max(2, Math.round(tile.rect.height)),
+  }));
 
-  const stats = await mainTrack.computePacketStats(50).catch(() => null);
+  const stats = await tracks[0].computePacketStats(50).catch(() => null);
   const framerate = stats && stats.averagePacketRate > 0 ? Math.max(1, Math.min(120, Math.round(stats.averagePacketRate))) : 30;
   const frameDurUs = Math.round(1_000_000 / framerate);
   const totalFrames = Math.max(1, Math.ceil(outputDuration * framerate - 1e-6));
   const bitrate = Math.max(1_000_000, Math.min(25_000_000, Math.round(outWidth * outHeight * framerate * 0.15)));
   const choice = await chooseCodec(outWidth, outHeight, framerate, bitrate);
 
-  const mainConfig = await mainTrack.getDecoderConfig();
-  if (!mainConfig) throw new Error("Could not read the main video decoder configuration.");
-  const secondConfig = await secondTrack.getDecoderConfig();
-  if (!secondConfig) throw new Error("Could not read the second video decoder configuration.");
-  for (const [config, which] of [
-    [mainConfig, "main"],
-    [secondConfig, "second"],
-  ] as const) {
+  const configs: VideoDecoderConfig[] = [];
+  for (let i = 0; i < tracks.length; i++) {
+    const config = await tracks[i].getDecoderConfig();
+    if (!config) throw new Error("Could not read a tile video decoder configuration.");
     const support = await VideoDecoder.isConfigSupported(config).catch(() => null);
     if (!support || !support.supported) {
-      throw new Error(`This browser cannot decode the ${which} input codec (${config.codec}).`);
+      throw new Error(`This browser cannot decode an input codec (${config.codec}).`);
     }
+    configs.push(config);
   }
 
-  let audioInput: Input | null = null;
-  let audioTrim = mainTrim;
-  let audioShift = 0;
-  if (layout.audioSource === "main") {
-    audioInput = options.main.input;
-    audioTrim = mainTrim;
-    audioShift = 0;
-  } else if (layout.audioSource === "second") {
-    audioInput = options.second.input;
-    audioTrim = secondTrim;
-    audioShift = offset;
-  }
-  const audioTrack = audioInput ? await audioInput.getPrimaryAudioTrack() : null;
+  const audioTrack = options.audio ? await options.audio.input.getPrimaryAudioTrack() : null;
+  const audioTrim = options.audio ? clampRange(options.audio.trim, await options.audio.input.computeDuration()) : null;
+  const audioShift = options.audio ? options.audio.offsetSec : 0;
 
   const target = new BufferTarget();
   const output = new Output({ format: new Mp4OutputFormat(), target });
@@ -229,7 +225,7 @@ export async function exportComposite(options: CompositeExportOptions): Promise<
 
   let audioCopied = false;
   const audioTask = (async () => {
-    if (!audioTrack || !audioSource || !audioInput) return;
+    if (!audioTrack || !audioSource || !options.audio || !audioTrim) return;
     try {
       const sink = new EncodedPacketSink(audioTrack);
       const config = await audioTrack.getDecoderConfig().catch(() => null);
@@ -267,30 +263,32 @@ export async function exportComposite(options: CompositeExportOptions): Promise<
   });
   encoder.configure(choice.config);
 
-  const pumpA = new FramePump(new EncodedPacketSink(mainTrack), mainConfig, mainTrim.startSec, mainTrim.endSec, shouldStop, noteFailure);
-  const pumpB = new FramePump(new EncodedPacketSink(secondTrack), secondConfig, secondTrim.startSec, secondTrim.endSec, shouldStop, noteFailure);
-  await pumpA.init();
-  await pumpB.init();
+  const pumps = options.tiles.map(
+    (_tile, i) =>
+      new FramePump(new EncodedPacketSink(tracks[i]), configs[i], trims[i].startSec, trims[i].endSec, shouldStop, noteFailure),
+  );
+  for (const pump of pumps) await pump.init();
 
   try {
     for (let i = 0; i < totalFrames; i++) {
       if (shouldStop()) break;
       const t = i / framerate;
-      await pumpA.advanceTo(mainTrim.startSec + t);
-      const secondLocal = t - offset;
-      const secondActive = secondLocal >= -0.0005 && secondLocal <= secondRange + 0.0005;
-      if (secondActive) {
-        await pumpB.advanceTo(secondTrim.startSec + Math.max(0, secondLocal));
-      }
-      if (shouldStop()) break;
       ctx.fillStyle = "#000";
       ctx.fillRect(0, 0, outWidth, outHeight);
-      if (pumpA.current) {
-        ctx.drawImage(pumpA.current, crop.x, crop.y, crop.width, crop.height, tileA.x, tileA.y, tileA.width, tileA.height);
+      for (let k = 0; k < options.tiles.length; k++) {
+        const tile = options.tiles[k];
+        const local = t - tile.offsetSec;
+        if (local < -0.0005) continue;
+        const sourceTime = trims[k].startSec + Math.min(Math.max(0, local), ranges[k]);
+        await pumps[k].advanceTo(sourceTime);
+        if (shouldStop()) break;
+        const frame = pumps[k].current;
+        if (frame) {
+          const crop = tile.crop;
+          ctx.drawImage(frame, crop.x, crop.y, crop.width, crop.height, rects[k].x, rects[k].y, rects[k].width, rects[k].height);
+        }
       }
-      if (secondActive && pumpB.current) {
-        ctx.drawImage(pumpB.current, tileB.x, tileB.y, tileB.width, tileB.height);
-      }
+      if (shouldStop()) break;
       const outFrame = new VideoFrame(canvas, { timestamp: i * frameDurUs, duration: frameDurUs });
       encoder.encode(outFrame, { keyFrame: i % (framerate * 2) === 0 });
       outFrame.close();
@@ -303,8 +301,7 @@ export async function exportComposite(options: CompositeExportOptions): Promise<
     noteFailure(err);
   }
 
-  pumpA.close();
-  pumpB.close();
+  for (const pump of pumps) pump.close();
 
   if (options.isCancelled()) {
     try {

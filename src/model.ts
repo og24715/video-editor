@@ -54,18 +54,25 @@ export interface TileRect {
   height: number;
 }
 
-export type AudioSourceChoice = "main" | "second" | "none";
-
-export interface LayoutGeometry {
-  outputWidth: number;
-  outputHeight: number;
-  tileA: TileRect;
-  tileB: TileRect;
+export interface LayoutTile {
+  id: string;
+  clipId: string;
+  rect: TileRect;
+  offsetSec: number;
 }
 
-export interface LayoutState extends LayoutGeometry {
-  offsetSec: number;
-  audioSource: AudioSourceChoice;
+export interface LayoutState {
+  outputWidth: number;
+  outputHeight: number;
+  tiles: LayoutTile[];
+  audioSourceClipId: string | null;
+}
+
+export interface PairRects {
+  outputWidth: number;
+  outputHeight: number;
+  rectA: TileRect;
+  rectB: TileRect;
 }
 
 function evenDown(value: number, min = 2): number {
@@ -74,34 +81,57 @@ function evenDown(value: number, min = 2): number {
   return Math.max(min, even);
 }
 
-export function sideBySideLayout(
+export function sideBySideRects(
   mainWidth: number,
   mainHeight: number,
   secondWidth: number,
   secondHeight: number,
-): LayoutGeometry {
+): PairRects {
   const height = evenDown(Math.min(mainHeight, secondHeight));
-  const tileA: TileRect = {
+  const rectA: TileRect = {
     x: 0,
     y: 0,
     width: evenDown((mainWidth * height) / mainHeight),
     height,
   };
-  const tileB: TileRect = {
-    x: tileA.width,
+  const rectB: TileRect = {
+    x: rectA.width,
     y: 0,
     width: evenDown((secondWidth * height) / secondHeight),
     height,
   };
   return {
-    outputWidth: tileA.width + tileB.width,
+    outputWidth: rectA.width + rectB.width,
     outputHeight: height,
-    tileA,
-    tileB,
+    rectA,
+    rectB,
   };
 }
 
-function clampOutputSize(value: number): number {
+export function pipRects(mainWidth: number, mainHeight: number, secondWidth: number, secondHeight: number): PairRects {
+  const outputWidth = evenDown(mainWidth);
+  const outputHeight = evenDown(mainHeight);
+  let rectBWidth = evenDown(outputWidth * 0.3);
+  let rectBHeight = evenDown((rectBWidth * secondHeight) / secondWidth);
+  if (rectBHeight > outputHeight - 32) {
+    rectBHeight = evenDown(outputHeight - 32);
+    rectBWidth = evenDown((rectBHeight * secondWidth) / secondHeight);
+  }
+  const rectB: TileRect = {
+    x: Math.max(0, outputWidth - rectBWidth - 16),
+    y: Math.max(0, outputHeight - rectBHeight - 16),
+    width: rectBWidth,
+    height: rectBHeight,
+  };
+  return {
+    outputWidth,
+    outputHeight,
+    rectA: { x: 0, y: 0, width: outputWidth, height: outputHeight },
+    rectB,
+  };
+}
+
+export function clampOutputSize(value: number): number {
   if (!Number.isFinite(value)) return 16;
   const clamped = Math.max(16, Math.min(7680, Math.round(value)));
   return clamped - (clamped % 2);
@@ -126,50 +156,51 @@ function fitTileToCanvas(scaled: TileRect, aspect: number, outputWidth: number, 
   return { x, y, width, height };
 }
 
-export function resizedLayout(
-  geometry: LayoutGeometry,
+export function resizedTiles(
+  tiles: LayoutTile[],
+  aspects: number[],
   newWidth: number,
   newHeight: number,
-  mainAspect: number,
-  secondAspect: number,
-): LayoutGeometry {
+  oldWidth: number,
+  oldHeight: number,
+): { outputWidth: number; outputHeight: number; tiles: LayoutTile[] } {
   const outputWidth = clampOutputSize(newWidth);
   const outputHeight = clampOutputSize(newHeight);
-  const scaleX = outputWidth / geometry.outputWidth;
-  const scaleY = outputHeight / geometry.outputHeight;
-  const scaleTile = (tile: TileRect): TileRect => ({
-    x: tile.x * scaleX,
-    y: tile.y * scaleY,
-    width: tile.width * scaleX,
-    height: tile.height * scaleY,
+  const scaleX = oldWidth > 0 ? outputWidth / oldWidth : 1;
+  const scaleY = oldHeight > 0 ? outputHeight / oldHeight : 1;
+  const nextTiles = tiles.map((tile, i) => {
+    const scaled: TileRect = {
+      x: tile.rect.x * scaleX,
+      y: tile.rect.y * scaleY,
+      width: tile.rect.width * scaleX,
+      height: tile.rect.height * scaleY,
+    };
+    const aspect = aspects[i] && aspects[i] > 0 ? aspects[i] : 16 / 9;
+    return { ...tile, rect: fitTileToCanvas(scaled, aspect, outputWidth, outputHeight) };
   });
-  return {
-    outputWidth,
-    outputHeight,
-    tileA: fitTileToCanvas(scaleTile(geometry.tileA), mainAspect > 0 ? mainAspect : 16 / 9, outputWidth, outputHeight),
-    tileB: fitTileToCanvas(scaleTile(geometry.tileB), secondAspect > 0 ? secondAspect : 16 / 9, outputWidth, outputHeight),
-  };
+  return { outputWidth, outputHeight, tiles: nextTiles };
 }
 
-export function pipLayout(mainWidth: number, mainHeight: number, secondWidth: number, secondHeight: number): LayoutGeometry {
-  const outputWidth = evenDown(mainWidth);
-  const outputHeight = evenDown(mainHeight);
-  let tileBWidth = evenDown(outputWidth * 0.3);
-  let tileBHeight = evenDown((tileBWidth * secondHeight) / secondWidth);
-  if (tileBHeight > outputHeight - 32) {
-    tileBHeight = evenDown(outputHeight - 32);
-    tileBWidth = evenDown((tileBHeight * secondWidth) / secondHeight);
+export function droppedTileRect(
+  outputWidth: number,
+  outputHeight: number,
+  aspect: number,
+  centerX: number,
+  centerY: number,
+): TileRect {
+  const safeAspect = aspect > 0 ? aspect : 16 / 9;
+  let width = Math.max(16, Math.round(outputWidth * 0.4));
+  width -= width % 2;
+  let height = Math.round(width / safeAspect);
+  if (height > outputHeight) {
+    height = outputHeight;
+    width = Math.round(height * safeAspect);
   }
-  const tileB: TileRect = {
-    x: Math.max(0, outputWidth - tileBWidth - 16),
-    y: Math.max(0, outputHeight - tileBHeight - 16),
-    width: tileBWidth,
-    height: tileBHeight,
-  };
-  return {
-    outputWidth,
-    outputHeight,
-    tileA: { x: 0, y: 0, width: outputWidth, height: outputHeight },
-    tileB,
-  };
+  if (width > outputWidth) {
+    width = outputWidth;
+    height = Math.round(width / safeAspect);
+  }
+  const x = Math.round(Math.max(0, Math.min(centerX - width / 2, Math.max(0, outputWidth - width))));
+  const y = Math.round(Math.max(0, Math.min(centerY - height / 2, Math.max(0, outputHeight - height))));
+  return { x, y, width, height };
 }

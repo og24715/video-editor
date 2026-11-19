@@ -24,3 +24,6 @@ dist-ssr
 *.sw?
 
 dist-server
+
+# Synthetic test fixtures (generated locally, not committed)
+fixtures/

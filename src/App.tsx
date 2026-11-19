@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { Theme } from "@astryxdesign/core/theme";
 import { ttsTheme } from "./themes/tts/tts";
 import { Heading } from "@astryxdesign/core/Heading";
+import { Card } from "@astryxdesign/core/Card";
 import { Text } from "@astryxdesign/core/Text";
 import { Button } from "@astryxdesign/core/Button";
 import { SegmentedControl, SegmentedControlItem } from "@astryxdesign/core/SegmentedControl";
@@ -9,8 +10,8 @@ import { HStack } from "@astryxdesign/core/HStack";
 import { VStack } from "@astryxdesign/core/VStack";
 import { Spinner } from "@astryxdesign/core/Spinner";
 import { FolderOpen } from "lucide-react";
-import type { ActiveTool, AspectPreset, Clip, CropRect, LayoutState, TileRect, ToolId, TrimRange } from "./model";
-import { evenRect, pipLayout, resizedLayout, sideBySideLayout } from "./model";
+import type { ActiveTool, AspectPreset, Clip, CropRect, LayoutState, LayoutTile, TileRect, ToolId, TrimRange } from "./model";
+import { droppedTileRect, evenRect, pipRects, resizedTiles, sideBySideRects } from "./model";
 import { ExportCancelledError, exportCropped, openInput, readMeta, webCodecsSupported } from "./exporter";
 import { exportComposite } from "./compositeExporter";
 import { exportGif, gifOutputSize } from "./gifExporter";
@@ -72,12 +73,14 @@ interface DragState {
 }
 
 interface TileDragState {
-  tile: "a" | "b";
+  tileId: string;
   mode: "move" | "resize";
   startClientX: number;
   startClientY: number;
   startRect: TileRect;
 }
+
+const POOL_DRAG_TYPE = "application/x-video-editor-clip";
 
 interface SaveFilePickerWindow {
   showSaveFilePicker?: (options: {
@@ -147,11 +150,26 @@ function fmtSize(bytes: number): string {
   return `${bytes} B`;
 }
 
+let clipIdCounter = 0;
+function nextClipId(): string {
+  clipIdCounter += 1;
+  return `clip-${Date.now()}-${clipIdCounter}`;
+}
+
+let tileIdCounter = 0;
+function nextTileId(): string {
+  tileIdCounter += 1;
+  return `tile-${Date.now()}-${tileIdCounter}`;
+}
+
 export default function App() {
   const [clips, setClips] = useState<Clip[]>([]);
+  const [activeClipId, setActiveClipId] = useState<string | null>(null);
   const [aspect, setAspect] = useState<AspectPreset>("free");
   const [activeTool, setActiveTool] = useState<ActiveTool>("none");
   const [dragging, setDragging] = useState(false);
+  const [poolDragging, setPoolDragging] = useState(false);
+  const [stageDragOver, setStageDragOver] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -167,7 +185,6 @@ export default function App() {
   const [resultFormat, setResultFormat] = useState<ExportFormat>("mp4");
   const [audioCopied, setAudioCopied] = useState<boolean | null>(null);
   const [playheadSec, setPlayheadSec] = useState(0);
-  const [secondClip, setSecondClip] = useState<Clip | null>(null);
   const [layout, setLayout] = useState<LayoutState | null>(null);
   const [layoutPlaying, setLayoutPlaying] = useState(false);
   const [outWText, setOutWText] = useState("");
@@ -176,36 +193,36 @@ export default function App() {
   const thumbsClipRef = useRef<string | null>(null);
   const timelineRef = useRef<HTMLDivElement | null>(null);
   const tlDragRef = useRef<"start" | "end" | null>(null);
-  const secondFileInputRef = useRef<HTMLInputElement | null>(null);
-  const secondVideoRef = useRef<HTMLVideoElement | null>(null);
+  const poolFileInputRef = useRef<HTMLInputElement | null>(null);
+  const tileVideoRefs = useRef<Map<string, HTMLVideoElement>>(new Map());
   const layoutStageRef = useRef<HTMLDivElement | null>(null);
   const tileDragRef = useRef<TileDragState | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const stageRef = useRef<HTMLDivElement | null>(null);
+  const stageWrapRef = useRef<HTMLDivElement | null>(null);
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const dragRef = useRef<DragState | null>(null);
   const cancelRef = useRef(false);
   const supported = webCodecsSupported();
 
-  const clip = clips[0] ?? null;
+  const clip = clips.find((c) => c.id === activeClipId) ?? clips[0] ?? null;
   const ratio = ASPECTS.find((a) => a.value === aspect)?.ratio ?? null;
   const cropActive = activeTool === "crop";
   const trimActive = activeTool === "trim";
   const layoutActive = activeTool === "layout";
+  const compositing = layout !== null && layout.tiles.length >= 2;
   const trimRef = useRef<TrimRange>({ startSec: 0, endSec: 0 });
   const durationRef = useRef(0);
   const toolRef = useRef<ActiveTool>("none");
   const seekClampRef = useRef(false);
   const layoutRef = useRef<LayoutState | null>(null);
-  const secondTrimRef = useRef<TrimRange>({ startSec: 0, endSec: 0 });
+  const clipsRef = useRef<Clip[]>([]);
   toolRef.current = activeTool;
   layoutRef.current = layout;
+  clipsRef.current = clips;
   if (clip) {
     trimRef.current = clip.trim;
     durationRef.current = clip.meta.durationSec;
-  }
-  if (secondClip) {
-    secondTrimRef.current = secondClip.trim;
   }
 
   useEffect(() => {
@@ -215,23 +232,19 @@ export default function App() {
     }
   }, [layout?.outputWidth, layout?.outputHeight]);
 
-  const setCrop = useCallback(
-    (crop: CropRect) => {
-      setClips((prev) => prev.map((c, i) => (i === 0 ? { ...c, crop } : c)));
-    },
-    [],
-  );
+  const setCrop = useCallback((crop: CropRect) => {
+    setClips((prev) => {
+      const targetId = prev.find((c) => c.id === activeClipId)?.id ?? prev[0]?.id;
+      return prev.map((c) => (c.id === targetId ? { ...c, crop } : c));
+    });
+  }, [activeClipId]);
 
-  const setTrim = useCallback(
-    (trim: TrimRange) => {
-      setClips((prev) => prev.map((c, i) => (i === 0 ? { ...c, trim } : c)));
-    },
-    [],
-  );
-
-  const setSecondTrim = useCallback((trim: TrimRange) => {
-    setSecondClip((prev) => (prev ? { ...prev, trim } : prev));
-  }, []);
+  const setTrim = useCallback((trim: TrimRange) => {
+    setClips((prev) => {
+      const targetId = prev.find((c) => c.id === activeClipId)?.id ?? prev[0]?.id;
+      return prev.map((c) => (c.id === targetId ? { ...c, trim } : c));
+    });
+  }, [activeClipId]);
 
   const clampPlayheadToTrim = useCallback(() => {
     const video = videoRef.current;
@@ -244,56 +257,82 @@ export default function App() {
     }
   }, []);
 
-  const loadFile = useCallback(async (file: File) => {
-    setError(null);
-    setNotice(null);
-    setActiveTool("none");
-    setResultUrl(null);
-    setUsedCodec(null);
-    setAudioCopied(null);
-    setThumbs([]);
-    thumbsClipRef.current = null;
-    setPlayheadSec(0);
-    setSecondClip((prev) => {
-      if (prev) {
-        prev.input.dispose();
-        URL.revokeObjectURL(prev.url);
-      }
-      return null;
-    });
-    setLayout(null);
-    setLayoutPlaying(false);
+  const createClip = useCallback(async (file: File): Promise<Clip> => {
     if (!/\.mp4$/i.test(file.name) && file.type !== "video/mp4") {
-      setError("Please choose an MP4 file.");
-      return;
+      throw new Error(`"${file.name}" is not an MP4 file.`);
     }
-    setLoading(true);
-    try {
-      const input = await openInput(file);
-      const meta = await readMeta(input);
-      const url = URL.createObjectURL(file);
-      const next: Clip = {
-        id: `${Date.now()}`,
-        file,
-        url,
-        input,
-        meta,
-        crop: { x: 0, y: 0, width: meta.width, height: meta.height },
-        trim: { startSec: 0, endSec: meta.durationSec },
-      };
-      setClips((prev) => {
-        for (const old of prev) {
-          old.input.dispose();
-          URL.revokeObjectURL(old.url);
+    const input = await openInput(file);
+    const meta = await readMeta(input);
+    const url = URL.createObjectURL(file);
+    return {
+      id: nextClipId(),
+      file,
+      url,
+      input,
+      meta,
+      crop: { x: 0, y: 0, width: meta.width, height: meta.height },
+      trim: { startSec: 0, endSec: meta.durationSec },
+    };
+  }, []);
+
+  const addFiles = useCallback(
+    async (files: File[]) => {
+      if (files.length === 0) return;
+      setError(null);
+      setNotice(null);
+      setLoading(true);
+      try {
+        const created: Clip[] = [];
+        for (const file of files) {
+          created.push(await createClip(file));
         }
-        return [next];
-      });
-      setAspect("free");
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setLoading(false);
+        setClips((prev) => [...prev, ...created]);
+        setActiveClipId((prev) => prev ?? created[0].id);
+        if (clipsRef.current.length === 0) {
+          setActiveTool("none");
+          setPlayheadSec(0);
+          setAspect("free");
+        }
+      } catch (err) {
+        setError(err instanceof Error ? err.message : String(err));
+      } finally {
+        setLoading(false);
+      }
+    },
+    [createClip],
+  );
+
+  const loadFile = useCallback(
+    async (file: File) => {
+      await addFiles([file]);
+    },
+    [addFiles],
+  );
+
+  const removeClip = useCallback((clipId: string) => {
+    const target = clipsRef.current.find((c) => c.id === clipId);
+    if (target) {
+      target.input.dispose();
+      URL.revokeObjectURL(target.url);
     }
+    setClips((prev) => prev.filter((c) => c.id !== clipId));
+    setLayout((prev) => {
+      if (!prev) return prev;
+      const tiles = prev.tiles.filter((t) => t.clipId !== clipId);
+      if (tiles.length === prev.tiles.length) return prev;
+      if (tiles.length === 0) return null;
+      const audioSourceClipId =
+        prev.audioSourceClipId && tiles.some((t) => t.clipId === prev.audioSourceClipId)
+          ? prev.audioSourceClipId
+          : tiles[0].clipId;
+      return { ...prev, tiles, audioSourceClipId };
+    });
+    setActiveClipId((prev) => {
+      if (prev !== clipId) return prev;
+      const remaining = clipsRef.current.filter((c) => c.id !== clipId);
+      return remaining[0]?.id ?? null;
+    });
+    setLayoutPlaying(false);
   }, []);
 
   useEffect(() => {
@@ -371,46 +410,60 @@ export default function App() {
 
   useEffect(() => {
     if (!layoutActive) return;
-    const a = videoRef.current;
-    const b = secondVideoRef.current;
-    if (!a || !b) return;
+    const lay = layoutRef.current;
+    if (!lay || lay.tiles.length === 0) return;
+    const masterTile = lay.tiles[0];
+    const master = tileVideoRefs.current.get(masterTile.id);
+    if (!master) return;
+    const masterClip = clipsRef.current.find((c) => c.id === masterTile.clipId);
+    if (!masterClip) return;
     const sync = () => {
-      const lay = layoutRef.current;
-      if (!lay) return;
-      const bTrim = secondTrimRef.current;
-      const tOut = a.currentTime - trimRef.current.startSec;
-      const bTime = bTrim.startSec + tOut - lay.offsetSec;
-      if (bTime < bTrim.startSec) {
-        if (!b.paused) b.pause();
-        if (Math.abs(b.currentTime - bTrim.startSec) > 0.05) b.currentTime = bTrim.startSec;
-        return;
-      }
-      if (bTime > bTrim.endSec) {
-        if (!b.paused) b.pause();
-        return;
-      }
-      if (!a.paused) {
-        if (b.paused) {
-          void b.play().catch(() => undefined);
-        } else if (Math.abs(b.currentTime - bTime) > 0.3) {
-          b.currentTime = bTime;
+      const currentLayout = layoutRef.current;
+      if (!currentLayout) return;
+      const masterOut = master.currentTime - masterClip.trim.startSec;
+      for (let i = 1; i < currentLayout.tiles.length; i++) {
+        const tile = currentLayout.tiles[i];
+        const el = tileVideoRefs.current.get(tile.id);
+        const tileClip = clipsRef.current.find((c) => c.id === tile.clipId);
+        if (!el || !tileClip) continue;
+        const target = tileClip.trim.startSec + masterOut - tile.offsetSec;
+        if (target < tileClip.trim.startSec) {
+          if (!el.paused) el.pause();
+          if (Math.abs(el.currentTime - tileClip.trim.startSec) > 0.05) el.currentTime = tileClip.trim.startSec;
+          continue;
+        }
+        if (target > tileClip.trim.endSec) {
+          if (!el.paused) el.pause();
+          continue;
+        }
+        if (!master.paused) {
+          if (el.paused) {
+            void el.play().catch(() => undefined);
+          } else if (Math.abs(el.currentTime - target) > 0.3) {
+            el.currentTime = target;
+          }
         }
       }
     };
-    const onPauseA = () => {
-      if (!b.paused) b.pause();
+    const pauseOthers = () => {
+      const currentLayout = layoutRef.current;
+      if (!currentLayout) return;
+      for (let i = 1; i < currentLayout.tiles.length; i++) {
+        const el = tileVideoRefs.current.get(currentLayout.tiles[i].id);
+        if (el && !el.paused) el.pause();
+      }
       setLayoutPlaying(false);
     };
-    const onPlayA = () => setLayoutPlaying(true);
-    a.addEventListener("timeupdate", sync);
-    a.addEventListener("pause", onPauseA);
-    a.addEventListener("play", onPlayA);
+    const onPlayMaster = () => setLayoutPlaying(true);
+    master.addEventListener("timeupdate", sync);
+    master.addEventListener("pause", pauseOthers);
+    master.addEventListener("play", onPlayMaster);
     return () => {
-      a.removeEventListener("timeupdate", sync);
-      a.removeEventListener("pause", onPauseA);
-      a.removeEventListener("play", onPlayA);
+      master.removeEventListener("timeupdate", sync);
+      master.removeEventListener("pause", pauseOthers);
+      master.removeEventListener("play", onPlayMaster);
     };
-  }, [layoutActive, secondClip?.id, clip?.id]);
+  }, [layoutActive, layout?.tiles.map((t) => `${t.id}:${t.clipId}`).join("|")]);
 
   useEffect(() => {
     if (trimActive) clampPlayheadToTrim();
@@ -555,13 +608,7 @@ export default function App() {
       }
       return [];
     });
-    setSecondClip((prev) => {
-      if (prev) {
-        prev.input.dispose();
-        URL.revokeObjectURL(prev.url);
-      }
-      return null;
-    });
+    setActiveClipId(null);
     setLayout(null);
     setLayoutPlaying(false);
     setResultUrl(null);
@@ -573,79 +620,147 @@ export default function App() {
     setPlayheadSec(0);
   };
 
-  const loadSecondFile = async (file: File) => {
-    if (!clip) return;
-    setError(null);
-    setNotice(null);
-    if (!/\.mp4$/i.test(file.name) && file.type !== "video/mp4") {
-      setError("Please choose an MP4 file.");
-      return;
-    }
-    setLoading(true);
-    try {
-      const input = await openInput(file);
-      const meta = await readMeta(input);
-      const url = URL.createObjectURL(file);
-      const next: Clip = {
-        id: `${Date.now()}-b`,
-        file,
-        url,
-        input,
-        meta,
-        crop: { x: 0, y: 0, width: meta.width, height: meta.height },
-        trim: { startSec: 0, endSec: meta.durationSec },
-      };
-      if (secondClip) {
-        secondClip.input.dispose();
-        URL.revokeObjectURL(secondClip.url);
-      }
-      setSecondClip(next);
-      const mainOut = evenRect(clip.crop, clip.meta.width, clip.meta.height);
-      setLayout({
-        ...sideBySideLayout(mainOut.width, mainOut.height, meta.width, meta.height),
-        offsetSec: 0,
-        audioSource: "main",
+  const clipCropAspect = useCallback((target: Clip): number => {
+    const out = evenRect(target.crop, target.meta.width, target.meta.height);
+    return out.height > 0 ? out.width / out.height : target.meta.width / target.meta.height;
+  }, []);
+
+  const placeClipOnCanvas = useCallback(
+    (droppedClipId: string, clientX: number, clientY: number) => {
+      const dropped = clipsRef.current.find((c) => c.id === droppedClipId);
+      const active = clipsRef.current.find((c) => c.id === activeClipId) ?? clipsRef.current[0] ?? null;
+      if (!dropped || !active) return;
+      const stageEl = layoutStageRef.current ?? stageRef.current ?? stageWrapRef.current;
+      const bounds = stageEl?.getBoundingClientRect();
+      setLayout((prev) => {
+        if (!prev) {
+          const baseOut = evenRect(active.crop, active.meta.width, active.meta.height);
+          const outputWidth = baseOut.width;
+          const outputHeight = baseOut.height;
+          const baseTile: LayoutTile = {
+            id: nextTileId(),
+            clipId: active.id,
+            rect: { x: 0, y: 0, width: outputWidth, height: outputHeight },
+            offsetSec: 0,
+          };
+          const tiles: LayoutTile[] = [baseTile];
+          if (dropped.id !== active.id) {
+            let centerX = outputWidth / 2;
+            let centerY = outputHeight / 2;
+            if (bounds && bounds.width > 0 && bounds.height > 0) {
+              centerX = ((clientX - bounds.left) / bounds.width) * outputWidth;
+              centerY = ((clientY - bounds.top) / bounds.height) * outputHeight;
+            }
+            const aspect = clipCropAspect(dropped);
+            tiles.push({
+              id: nextTileId(),
+              clipId: dropped.id,
+              rect: droppedTileRect(outputWidth, outputHeight, aspect, centerX, centerY),
+              offsetSec: 0,
+            });
+          }
+          return { outputWidth, outputHeight, tiles, audioSourceClipId: active.id };
+        }
+        let centerX = prev.outputWidth / 2;
+        let centerY = prev.outputHeight / 2;
+        if (bounds && bounds.width > 0 && bounds.height > 0) {
+          centerX = ((clientX - bounds.left) / bounds.width) * prev.outputWidth;
+          centerY = ((clientY - bounds.top) / bounds.height) * prev.outputHeight;
+        }
+        const aspect = clipCropAspect(dropped);
+        const tile: LayoutTile = {
+          id: nextTileId(),
+          clipId: dropped.id,
+          rect: droppedTileRect(prev.outputWidth, prev.outputHeight, aspect, centerX, centerY),
+          offsetSec: 0,
+        };
+        return { ...prev, tiles: [...prev.tiles, tile] };
       });
       setExportFormat("mp4");
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setLoading(false);
+      setActiveTool("layout");
+      setLayoutPlaying(false);
+    },
+    [activeClipId, clipCropAspect],
+  );
+
+  const onStageDragOver = (event: React.DragEvent) => {
+    if (Array.from(event.dataTransfer.types).includes(POOL_DRAG_TYPE)) {
+      event.preventDefault();
+      event.dataTransfer.dropEffect = "copy";
+      setStageDragOver(true);
     }
   };
 
-  const removeSecond = () => {
-    if (secondClip) {
-      secondClip.input.dispose();
-      URL.revokeObjectURL(secondClip.url);
-    }
-    setSecondClip(null);
-    setLayout(null);
-    setLayoutPlaying(false);
-    if (layoutActive) setActiveTool("none");
+  const onStageDrop = (event: React.DragEvent) => {
+    const droppedId = event.dataTransfer.getData(POOL_DRAG_TYPE) || event.dataTransfer.getData("text/plain");
+    setStageDragOver(false);
+    if (!droppedId || !clipsRef.current.some((c) => c.id === droppedId)) return;
+    event.preventDefault();
+    placeClipOnCanvas(droppedId, event.clientX, event.clientY);
   };
+
+  const updateTile = useCallback((tileId: string, patch: Partial<LayoutTile>) => {
+    setLayout((prev) =>
+      prev ? { ...prev, tiles: prev.tiles.map((t) => (t.id === tileId ? { ...t, ...patch } : t)) } : prev,
+    );
+  }, []);
+
+  const removeTile = useCallback((tileId: string) => {
+    setLayout((prev) => {
+      if (!prev) return prev;
+      const tiles = prev.tiles.filter((t) => t.id !== tileId);
+      if (tiles.length === 0) return null;
+      const audioSourceClipId =
+        prev.audioSourceClipId && tiles.some((t) => t.clipId === prev.audioSourceClipId)
+          ? prev.audioSourceClipId
+          : tiles[0].clipId;
+      return { ...prev, tiles, audioSourceClipId };
+    });
+    setLayoutPlaying(false);
+  }, []);
+
+  const moveTileOrder = useCallback((tileId: string, direction: 1 | -1) => {
+    setLayout((prev) => {
+      if (!prev) return prev;
+      const index = prev.tiles.findIndex((t) => t.id === tileId);
+      const swapWith = index + direction;
+      if (index < 0 || swapWith < 0 || swapWith >= prev.tiles.length) return prev;
+      const tiles = [...prev.tiles];
+      const [moved] = tiles.splice(index, 1);
+      tiles.splice(swapWith, 0, moved);
+      return { ...prev, tiles };
+    });
+  }, []);
 
   const applyPreset = (preset: "side" | "pip") => {
-    if (!clip || !secondClip || !layout) return;
-    const mainOut = evenRect(clip.crop, clip.meta.width, clip.meta.height);
-    const geometry =
+    if (!layout || layout.tiles.length < 2) return;
+    const first = clips.find((c) => c.id === layout.tiles[0].clipId);
+    const second = clips.find((c) => c.id === layout.tiles[1].clipId);
+    if (!first || !second) return;
+    const firstOut = evenRect(first.crop, first.meta.width, first.meta.height);
+    const secondOut = evenRect(second.crop, second.meta.width, second.meta.height);
+    const pair =
       preset === "side"
-        ? sideBySideLayout(mainOut.width, mainOut.height, secondClip.meta.width, secondClip.meta.height)
-        : pipLayout(mainOut.width, mainOut.height, secondClip.meta.width, secondClip.meta.height);
-    setLayout({ ...layout, ...geometry });
+        ? sideBySideRects(firstOut.width, firstOut.height, secondOut.width, secondOut.height)
+        : pipRects(firstOut.width, firstOut.height, secondOut.width, secondOut.height);
+    setLayout({
+      ...layout,
+      outputWidth: pair.outputWidth,
+      outputHeight: pair.outputHeight,
+      tiles: layout.tiles.map((tile, i) =>
+        i === 0 ? { ...tile, rect: pair.rectA } : i === 1 ? { ...tile, rect: pair.rectB } : tile,
+      ),
+    });
   };
 
   const applyOutputSize = (newWidth: number, newHeight: number) => {
-    if (!clip || !secondClip || !layout) return;
-    const mainOut = evenRect(clip.crop, clip.meta.width, clip.meta.height);
-    const geometry = resizedLayout(
-      layout,
-      newWidth,
-      newHeight,
-      mainOut.width / mainOut.height,
-      secondClip.meta.width / secondClip.meta.height,
-    );
-    setLayout({ ...layout, ...geometry });
+    if (!layout) return;
+    const aspects = layout.tiles.map((tile) => {
+      const target = clips.find((c) => c.id === tile.clipId);
+      return target ? clipCropAspect(target) : 16 / 9;
+    });
+    const resized = resizedTiles(layout.tiles, aspects, newWidth, newHeight, layout.outputWidth, layout.outputHeight);
+    setLayout({ ...layout, outputWidth: resized.outputWidth, outputHeight: resized.outputHeight, tiles: resized.tiles });
   };
 
   const commitOutputSize = (event?: React.FocusEvent<HTMLInputElement>) => {
@@ -662,24 +777,28 @@ export default function App() {
     }
   };
 
-  const beginTileDrag = (event: React.PointerEvent, tile: "a" | "b", mode: "move" | "resize") => {
+  const beginTileDrag = (event: React.PointerEvent, tileId: string, mode: "move" | "resize") => {
     if (!layout || exporting || !layoutActive) return;
+    const tile = layout.tiles.find((t) => t.id === tileId);
+    if (!tile) return;
     event.preventDefault();
     event.stopPropagation();
     (event.target as HTMLElement).setPointerCapture(event.pointerId);
     tileDragRef.current = {
-      tile,
+      tileId,
       mode,
       startClientX: event.clientX,
       startClientY: event.clientY,
-      startRect: { ...(tile === "a" ? layout.tileA : layout.tileB) },
+      startRect: { ...tile.rect },
     };
   };
 
   const onTileDragMove = (event: React.PointerEvent) => {
     const drag = tileDragRef.current;
     const stage = layoutStageRef.current;
-    if (!drag || !layout || !stage || !secondClip) return;
+    if (!drag || !layout || !stage) return;
+    const tile = layout.tiles.find((t) => t.id === drag.tileId);
+    if (!tile) return;
     const rect = stage.getBoundingClientRect();
     if (rect.width === 0) return;
     const scale = layout.outputWidth / rect.width;
@@ -694,13 +813,8 @@ export default function App() {
         y: Math.max(0, Math.min(s.y + dy, layout.outputHeight - s.height)),
       };
     } else {
-      const mainOut = clip ? evenRect(clip.crop, clip.meta.width, clip.meta.height) : null;
-      const aspect =
-        drag.tile === "a"
-          ? mainOut && mainOut.height > 0
-            ? mainOut.width / mainOut.height
-            : 16 / 9
-          : secondClip.meta.width / secondClip.meta.height;
+      const tileClip = clips.find((c) => c.id === tile.clipId);
+      const aspect = tileClip ? clipCropAspect(tileClip) : 16 / 9;
       let width = Math.max(32, Math.min(s.width + dx, layout.outputWidth - s.x));
       let height = width / aspect;
       if (s.y + height > layout.outputHeight) {
@@ -709,7 +823,7 @@ export default function App() {
       }
       next = { ...s, width, height };
     }
-    setLayout({ ...layout, ...(drag.tile === "a" ? { tileA: next } : { tileB: next }) });
+    updateTile(drag.tileId, { rect: next });
   };
 
   const endTileDrag = () => {
@@ -717,32 +831,32 @@ export default function App() {
   };
 
   const toggleLayoutPlayback = () => {
-    const a = videoRef.current;
-    const b = secondVideoRef.current;
-    if (!a || !layout || !secondClip || !clip) return;
+    if (!layout || layout.tiles.length === 0) return;
+    const masterTile = layout.tiles[0];
+    const master = tileVideoRefs.current.get(masterTile.id);
+    const masterClip = clips.find((c) => c.id === masterTile.clipId);
+    if (!master || !masterClip) return;
     if (layoutPlaying) {
-      a.pause();
-      b?.pause();
+      for (const tile of layout.tiles) {
+        tileVideoRefs.current.get(tile.id)?.pause();
+      }
       setLayoutPlaying(false);
       return;
     }
-    const tOut = a.currentTime - clip.trim.startSec;
-    const bTime = secondClip.trim.startSec + tOut - layout.offsetSec;
-    if (b) {
-      b.currentTime = Math.max(secondClip.trim.startSec, Math.min(secondClip.trim.endSec, bTime));
-      if (bTime >= secondClip.trim.startSec && bTime <= secondClip.trim.endSec) {
-        void b.play().catch(() => undefined);
+    const masterOut = master.currentTime - masterClip.trim.startSec;
+    for (let i = 1; i < layout.tiles.length; i++) {
+      const tile = layout.tiles[i];
+      const el = tileVideoRefs.current.get(tile.id);
+      const tileClip = clips.find((c) => c.id === tile.clipId);
+      if (!el || !tileClip) continue;
+      const target = tileClip.trim.startSec + masterOut - tile.offsetSec;
+      el.currentTime = Math.max(tileClip.trim.startSec, Math.min(tileClip.trim.endSec, target));
+      if (target >= tileClip.trim.startSec && target <= tileClip.trim.endSec) {
+        void el.play().catch(() => undefined);
       }
     }
-    void a.play().catch(() => undefined);
+    void master.play().catch(() => undefined);
     setLayoutPlaying(true);
-  };
-
-  const updateSecondTrimField = (field: keyof TrimRange, raw: string) => {
-    if (!secondClip || !trimActive) return;
-    const value = Number(raw);
-    if (!Number.isFinite(value)) return;
-    setSecondTrim(clampTrim({ ...secondClip.trim, [field]: value }, secondClip.meta.durationSec));
   };
 
   const changeAspect = (value: string) => {
@@ -877,7 +991,7 @@ export default function App() {
       let blob: Blob;
       let suggested: string;
       let pickerType: { description: string; accept: Record<string, string[]> };
-      if (exportFormat === "gif" && !secondClip) {
+      if (exportFormat === "gif" && !compositing) {
         const res = await exportGif({
           input: clip.input,
           crop: out,
@@ -892,16 +1006,41 @@ export default function App() {
         setResultFormat("gif");
         suggested = `${clip.file.name.replace(/\.mp4$/i, "")}-loop.gif`;
         pickerType = { description: "GIF image", accept: { "image/gif": [".gif"] } };
-      } else if (secondClip && layout) {
+      } else if (compositing && layout) {
+        const tileSpecs = [];
+        for (const tile of layout.tiles) {
+          const tileClip = clips.find((c) => c.id === tile.clipId);
+          if (!tileClip) throw new Error("A tile's video is missing from the media pool.");
+          tileSpecs.push({
+            input: tileClip.input,
+            trim: tileClip.trim,
+            crop: evenRect(tileClip.crop, tileClip.meta.width, tileClip.meta.height),
+            rect: tile.rect,
+            offsetSec: tile.offsetSec,
+          });
+        }
+        let audio = null;
+        if (layout.audioSourceClipId) {
+          const audioTileIndex = layout.tiles.findIndex((t) => t.clipId === layout.audioSourceClipId);
+          const audioClip = clips.find((c) => c.id === layout.audioSourceClipId);
+          if (audioTileIndex >= 0 && audioClip) {
+            audio = {
+              input: audioClip.input,
+              trim: audioClip.trim,
+              offsetSec: layout.tiles[audioTileIndex].offsetSec,
+            };
+          }
+        }
         const res = await exportComposite({
-          main: { input: clip.input, crop: out, trim: clip.trim },
-          second: { input: secondClip.input, trim: secondClip.trim },
-          layout,
+          tiles: tileSpecs,
+          outputWidth: layout.outputWidth,
+          outputHeight: layout.outputHeight,
+          audio,
           onProgress: (value) => setProgress(value),
           isCancelled: () => cancelRef.current,
         });
         blob = res.blob;
-        setUsedCodec(`${res.codecLabel} · composite ${layout.outputWidth} × ${layout.outputHeight}`);
+        setUsedCodec(`${res.codecLabel} · composite ${layout.outputWidth} × ${layout.outputHeight} · ${layout.tiles.length} tiles`);
         setAudioCopied(res.audioCopied);
         setResultFormat("mp4");
         suggested = `${clip.file.name.replace(/\.mp4$/i, "")}-edited.mp4`;
@@ -966,22 +1105,30 @@ export default function App() {
   const trimIsFull =
     clip !== null && clip.trim.startSec <= 0.01 && clip.trim.endSec >= clip.meta.durationSec - 0.01;
   const selectionSec = clip ? Math.max(0, clip.trim.endSec - clip.trim.startSec) : 0;
-  const secondSelectionSec = secondClip ? Math.max(0, secondClip.trim.endSec - secondClip.trim.startSec) : 0;
-  const outputDurationSec =
-    layout && secondClip ? Math.max(selectionSec, layout.offsetSec + secondSelectionSec) : selectionSec;
-  const tileCss = (tile: TileRect): React.CSSProperties =>
+  const layoutDurationSec = layout
+    ? layout.tiles.reduce((max, tile) => {
+        const tileClip = clips.find((c) => c.id === tile.clipId);
+        if (!tileClip) return max;
+        return Math.max(max, tile.offsetSec + Math.max(0, tileClip.trim.endSec - tileClip.trim.startSec));
+      }, 0)
+    : 0;
+  const outputDurationSec = compositing ? layoutDurationSec : selectionSec;
+  const tileCss = (rect: TileRect): React.CSSProperties =>
     layout
       ? {
-          left: `${(tile.x / layout.outputWidth) * 100}%`,
-          top: `${(tile.y / layout.outputHeight) * 100}%`,
-          width: `${(tile.width / layout.outputWidth) * 100}%`,
-          height: `${(tile.height / layout.outputHeight) * 100}%`,
+          left: `${(rect.x / layout.outputWidth) * 100}%`,
+          top: `${(rect.y / layout.outputHeight) * 100}%`,
+          width: `${(rect.width / layout.outputWidth) * 100}%`,
+          height: `${(rect.height / layout.outputHeight) * 100}%`,
         }
       : {};
-  const resultAudioText = secondClip
+  const audioSourceName = layout?.audioSourceClipId
+    ? (clips.find((c) => c.id === layout.audioSourceClipId)?.file.name ?? null)
+    : null;
+  const resultAudioText = compositing
     ? audioCopied
       ? "Audio copied without re-encoding"
-      : layout?.audioSource === "none"
+      : !audioSourceName
         ? "No audio track (source: None)"
         : "Audio could not be copied"
     : clip && clip.meta.hasAudio
@@ -1002,6 +1149,92 @@ export default function App() {
     <Theme theme={ttsTheme} mode="dark">
       <div className="shell">
         <main className="shell-main">
+          <div className="workspace">
+            <aside
+              className={`pool${poolDragging ? " dragging" : ""}`}
+              onDragOver={(e) => {
+                if (Array.from(e.dataTransfer.types).includes("Files")) {
+                  e.preventDefault();
+                  setPoolDragging(true);
+                }
+              }}
+              onDragLeave={() => setPoolDragging(false)}
+              onDrop={(e) => {
+                e.preventDefault();
+                setPoolDragging(false);
+                const files = Array.from(e.dataTransfer.files);
+                if (files.length > 0) void addFiles(files);
+              }}
+            >
+              <div className="pool-header">
+                <Heading level={4}>Media</Heading>
+                <Text type="supporting">{clips.length} video{clips.length === 1 ? "" : "s"}</Text>
+              </div>
+              <Button
+                label="Add videos"
+                variant="primary"
+                onClick={() => poolFileInputRef.current?.click()}
+                isDisabled={loading}
+              />
+              <input
+                ref={poolFileInputRef}
+                type="file"
+                accept="video/mp4,.mp4"
+                multiple
+                style={{ display: "none" }}
+                onChange={(e) => {
+                  const files = Array.from(e.target.files ?? []);
+                  if (files.length > 0) void addFiles(files);
+                  e.target.value = "";
+                }}
+              />
+              {clips.length === 0 && (
+                <Text type="supporting">No videos yet. Add videos here, or drop MP4 files onto this column.</Text>
+              )}
+              <div className="pool-items">
+                {clips.map((item) => (
+                  <Card
+                    key={item.id}
+                    className={`pool-item${item.id === clip?.id ? " active" : ""}`}
+                    data-pool-clip={item.id}
+                    draggable={!exporting}
+                    onDragStart={(e) => {
+                      e.dataTransfer.setData(POOL_DRAG_TYPE, item.id);
+                      e.dataTransfer.setData("text/plain", item.id);
+                      e.dataTransfer.effectAllowed = "copy";
+                    }}
+                    onClick={() => {
+                      setActiveClipId(item.id);
+                      setPlayheadSec(0);
+                    }}
+                  >
+                    <video className="pool-thumb" src={item.url} preload="metadata" muted playsInline />
+                    <div className="pool-item-name">{item.file.name}</div>
+                    <div className="pool-item-meta">
+                      <span>{fmtDuration(item.meta.durationSec)}</span>
+                      <span>
+                        {item.meta.width} × {item.meta.height}
+                      </span>
+                    </div>
+                    <div className="pool-item-actions">
+                      <Button
+                        label="Remove"
+                        variant="secondary"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          removeClip(item.id);
+                        }}
+                        isDisabled={exporting}
+                      />
+                    </div>
+                  </Card>
+                ))}
+              </div>
+              {clips.length > 0 && (
+                <Text type="supporting">Drag a video onto the canvas to place it as a tile.</Text>
+              )}
+            </aside>
+            <div className="editor-column">
           <VStack gap={6}>
             {!supported && (
               <div className="error-box">
@@ -1031,13 +1264,13 @@ export default function App() {
                 onDrop={(e) => {
                   e.preventDefault();
                   setDragging(false);
-                  const file = e.dataTransfer.files[0];
-                  if (file) void loadFile(file);
+                  const files = Array.from(e.dataTransfer.files);
+                  if (files.length > 0) void addFiles(files);
                 }}
               >
                 <VStack gap={3}>
                   {loading ? <Spinner /> : <FolderOpen size={36} />}
-                  <Heading level={3}>Drop an MP4 file here</Heading>
+                  <Heading level={3}>Drop MP4 files here</Heading>
                   <Text type="supporting">or click to choose a file. Everything is processed locally in your browser.</Text>
                 </VStack>
               </div>
@@ -1053,17 +1286,7 @@ export default function App() {
                 e.target.value = "";
               }}
             />
-            <input
-              ref={secondFileInputRef}
-              type="file"
-              accept="video/mp4,.mp4"
-              style={{ display: "none" }}
-              onChange={(e) => {
-                const file = e.target.files?.[0];
-                if (file) void loadSecondFile(file);
-                e.target.value = "";
-              }}
-            />
+
             {clip && outRect && (
               <div className="editor-grid">
                 <div className="toolbar-sticky">
@@ -1083,17 +1306,7 @@ export default function App() {
                       onClick={() => toggleTool("trim")}
                       isDisabled={exporting}
                     />
-                    {secondClip ? (
-                      <Button label="Remove second video" variant="secondary" onClick={removeSecond} isDisabled={exporting} />
-                    ) : (
-                      <Button
-                        label="Add second video"
-                        variant="secondary"
-                        onClick={() => secondFileInputRef.current?.click()}
-                        isDisabled={exporting}
-                      />
-                    )}
-                    {secondClip && (
+                    {layout && (
                       <Button
                         label="Layout"
                         variant={layoutActive ? "primary" : "secondary"}
@@ -1111,16 +1324,16 @@ export default function App() {
                       ))}
                     </SegmentedControl>
                     <Text type="supporting">
-                      {secondClip && layout
+                      {layout
                         ? `Output: ${layout.outputWidth} × ${layout.outputHeight}`
                         : `Output: ${outRect.width} × ${outRect.height}`}
                     </Text>
                     <div className="toolbar-spacer" />
                     <SegmentedControl
                       label="Export format"
-                      value={secondClip ? "mp4" : exportFormat}
+                      value={compositing ? "mp4" : exportFormat}
                       onChange={(value) => {
-                        if (secondClip) {
+                        if (compositing) {
                           setExportFormat("mp4");
                           return;
                         }
@@ -1129,9 +1342,9 @@ export default function App() {
                       isDisabled={exporting}
                     >
                       <SegmentedControlItem value="mp4" label="MP4" />
-                      <SegmentedControlItem value="gif" label="GIF" isDisabled={Boolean(secondClip)} />
+                      <SegmentedControlItem value="gif" label="GIF" isDisabled={compositing} />
                     </SegmentedControl>
-                    {secondClip && <Text type="supporting">Two videos: MP4 only</Text>}
+                    {compositing && <Text type="supporting">Composite: MP4 only</Text>}
                     {exporting ? (
                       <Button
                         label="Cancel"
@@ -1142,14 +1355,14 @@ export default function App() {
                       />
                     ) : (
                       <Button
-                        label={!secondClip && exportFormat === "gif" ? "Export GIF" : "Export MP4"}
+                        label={!compositing && exportFormat === "gif" ? "Export GIF" : "Export MP4"}
                         variant="primary"
                         onClick={() => void runExport()}
                         isDisabled={!supported}
                       />
                     )}
                   </div>
-                  {exportFormat === "gif" && !secondClip && (
+                  {exportFormat === "gif" && !compositing && (
                     <div className="gif-settings">
                       <Text type="supporting">Width</Text>
                       <SegmentedControl label="GIF width" value={gifWidth} onChange={setGifWidth} isDisabled={exporting}>
@@ -1184,60 +1397,64 @@ export default function App() {
                     </div>
                   )}
                 </div>
-                <div className="stage-wrap">
-                  {layoutActive && secondClip && layout ? (
+                <div
+                  className={`stage-wrap${stageDragOver ? " drag-over" : ""}`}
+                  ref={stageWrapRef}
+                  onDragOver={onStageDragOver}
+                  onDragLeave={() => setStageDragOver(false)}
+                  onDrop={onStageDrop}
+                >
+                  {layoutActive && layout ? (
                     <div className="layout-wrap">
                       <div
                         className="layout-stage"
                         ref={layoutStageRef}
                         style={{ aspectRatio: `${layout.outputWidth} / ${layout.outputHeight}` }}
                       >
-                        <div
-                          className="layout-tile"
-                          data-tile="a"
-                          style={tileCss(layout.tileA)}
-                          onPointerDown={(e) => beginTileDrag(e, "a", "move")}
-                          onPointerMove={onTileDragMove}
-                          onPointerUp={endTileDrag}
-                          onPointerCancel={endTileDrag}
-                        >
-                          <video ref={videoRef} src={clip.url} playsInline />
-                          <div
-                            className="layout-tile-handle"
-                            onPointerDown={(e) => beginTileDrag(e, "a", "resize")}
-                            onPointerMove={onTileDragMove}
-                            onPointerUp={endTileDrag}
-                            onPointerCancel={endTileDrag}
-                          />
-                        </div>
-                        <div
-                          className="layout-tile"
-                          data-tile="b"
-                          style={tileCss(layout.tileB)}
-                          onPointerDown={(e) => beginTileDrag(e, "b", "move")}
-                          onPointerMove={onTileDragMove}
-                          onPointerUp={endTileDrag}
-                          onPointerCancel={endTileDrag}
-                        >
-                          <video ref={secondVideoRef} src={secondClip.url} playsInline />
-                          <div
-                            className="layout-tile-handle"
-                            onPointerDown={(e) => beginTileDrag(e, "b", "resize")}
-                            onPointerMove={onTileDragMove}
-                            onPointerUp={endTileDrag}
-                            onPointerCancel={endTileDrag}
-                          />
-                        </div>
+                        {layout.tiles.map((tile) => {
+                          const tileClip = clips.find((c) => c.id === tile.clipId);
+                          if (!tileClip) return null;
+                          return (
+                            <div
+                              key={tile.id}
+                              className="layout-tile"
+                              data-tile-id={tile.id}
+                              data-clip-id={tile.clipId}
+                              style={tileCss(tile.rect)}
+                              onPointerDown={(e) => beginTileDrag(e, tile.id, "move")}
+                              onPointerMove={onTileDragMove}
+                              onPointerUp={endTileDrag}
+                              onPointerCancel={endTileDrag}
+                            >
+                              <video
+                                ref={(el) => {
+                                  if (el) tileVideoRefs.current.set(tile.id, el);
+                                  else tileVideoRefs.current.delete(tile.id);
+                                }}
+                                src={tileClip.url}
+                                playsInline
+                              />
+                              <div
+                                className="layout-tile-handle"
+                                onPointerDown={(e) => beginTileDrag(e, tile.id, "resize")}
+                                onPointerMove={onTileDragMove}
+                                onPointerUp={endTileDrag}
+                                onPointerCancel={endTileDrag}
+                              />
+                            </div>
+                          );
+                        })}
                       </div>
                       <div className="layout-controls">
                         <Button
-                          label={layoutPlaying ? "Pause both" : "Play both"}
+                          label={layoutPlaying ? "Pause all" : "Play all"}
                           variant="primary"
                           onClick={toggleLayoutPlayback}
                           isDisabled={exporting}
                         />
                         <Text type="supporting">
-                          Output {layout.outputWidth} × {layout.outputHeight} · Duration {fmtSec(outputDurationSec)}
+                          Output {layout.outputWidth} × {layout.outputHeight} · Duration {fmtSec(outputDurationSec)} ·{" "}
+                          {layout.tiles.length} tile{layout.tiles.length === 1 ? "" : "s"}
                         </Text>
                       </div>
                     </div>
@@ -1390,51 +1607,16 @@ export default function App() {
                       <Text type="supporting">
                         Selection: {fmtSec(selectionSec)} of {fmtSec(clip.meta.durationSec)}
                       </Text>
-                      {secondClip && (
-                        <>
-                          <Text type="supporting">
-                            Second video trim — {secondClip.file.name} ({fmtDuration(secondClip.meta.durationSec)})
-                          </Text>
-                          <div className="field-row">
-                            <div className="field">
-                              <label htmlFor="trim2-start">Second start (s)</label>
-                              <input
-                                id="trim2-start"
-                                type="number"
-                                min={0}
-                                max={secondClip.meta.durationSec}
-                                step={0.1}
-                                value={Math.round(secondClip.trim.startSec * 100) / 100}
-                                onChange={(e) => updateSecondTrimField("startSec", e.target.value)}
-                              />
-                            </div>
-                            <div className="field">
-                              <label htmlFor="trim2-end">Second end (s)</label>
-                              <input
-                                id="trim2-end"
-                                type="number"
-                                min={0}
-                                max={secondClip.meta.durationSec}
-                                step={0.1}
-                                value={Math.round(secondClip.trim.endSec * 100) / 100}
-                                onChange={(e) => updateSecondTrimField("endSec", e.target.value)}
-                              />
-                            </div>
-                          </div>
-                          <Text type="supporting">Second selection: {fmtSec(secondSelectionSec)}</Text>
-                        </>
-                      )}
+                      <Text type="supporting">
+                        To trim another video, select it in the Media column first.
+                      </Text>
                     </>
                   )}
-                  {layoutActive && secondClip && layout && (
+                  {layoutActive && layout && (
                     <>
-                      <Text type="supporting">
-                        Second: {secondClip.file.name} · {secondClip.meta.width} × {secondClip.meta.height} ·{" "}
-                        {fmtDuration(secondClip.meta.durationSec)}
-                      </Text>
                       <HStack gap={3} vAlign="center">
-                        <Button label="Side by side" variant="secondary" onClick={() => applyPreset("side")} isDisabled={exporting} />
-                        <Button label="Picture in picture" variant="secondary" onClick={() => applyPreset("pip")} isDisabled={exporting} />
+                        <Button label="Side by side" variant="secondary" onClick={() => applyPreset("side")} isDisabled={exporting || layout.tiles.length < 2} />
+                        <Button label="Picture in picture" variant="secondary" onClick={() => applyPreset("pip")} isDisabled={exporting || layout.tiles.length < 2} />
                       </HStack>
                       <div className="field-row">
                         <div className="field">
@@ -1484,46 +1666,95 @@ export default function App() {
                           <span className="layout-warning">Large canvas: encoding will be heavy and the file big.</span>
                         </Text>
                       )}
+                      <div className="tile-list">
+                        {layout.tiles.map((tile, index) => {
+                          const tileClip = clips.find((c) => c.id === tile.clipId);
+                          return (
+                            <div className="tile-row" key={tile.id} data-tile-row={tile.id}>
+                              <div className="tile-row-main">
+                                <Text type="supporting">
+                                  {index + 1}. {tileClip ? tileClip.file.name : "(missing video)"}
+                                </Text>
+                                <Text type="supporting">
+                                  {Math.round(tile.rect.width)} × {Math.round(tile.rect.height)} at {Math.round(tile.rect.x)},{" "}
+                                  {Math.round(tile.rect.y)}
+                                </Text>
+                              </div>
+                              <div className="field tile-offset-field">
+                                <label htmlFor={`tile-offset-${tile.id}`}>Offset (s)</label>
+                                <input
+                                  id={`tile-offset-${tile.id}`}
+                                  type="number"
+                                  min={-10}
+                                  max={10}
+                                  step={0.1}
+                                  value={tile.offsetSec}
+                                  disabled={index === 0 || exporting}
+                                  onChange={(e) => {
+                                    const value = Number(e.target.value);
+                                    if (Number.isFinite(value)) {
+                                      updateTile(tile.id, { offsetSec: Math.max(-10, Math.min(10, value)) });
+                                    }
+                                  }}
+                                />
+                              </div>
+                              <HStack gap={2} vAlign="center">
+                                <Button
+                                  label="Forward"
+                                  variant="secondary"
+                                  onClick={() => moveTileOrder(tile.id, 1)}
+                                  isDisabled={exporting || index === layout.tiles.length - 1}
+                                />
+                                <Button
+                                  label="Backward"
+                                  variant="secondary"
+                                  onClick={() => moveTileOrder(tile.id, -1)}
+                                  isDisabled={exporting || index === 0}
+                                />
+                                <Button
+                                  label="Remove tile"
+                                  variant="secondary"
+                                  onClick={() => removeTile(tile.id)}
+                                  isDisabled={exporting}
+                                />
+                              </HStack>
+                            </div>
+                          );
+                        })}
+                      </div>
                       <div className="field-row">
                         <div className="field">
-                          <label htmlFor="layout-offset">Second video offset (s)</label>
-                          <input
-                            id="layout-offset"
-                            type="number"
-                            min={-10}
-                            max={10}
-                            step={0.1}
-                            value={layout.offsetSec}
-                            onChange={(e) => {
-                              const value = Number(e.target.value);
-                              if (Number.isFinite(value)) {
-                                setLayout({ ...layout, offsetSec: Math.max(-10, Math.min(10, value)) });
-                              }
-                            }}
-                          />
-                        </div>
-                        <div className="field">
-                          <label>Audio source</label>
-                          <SegmentedControl
-                            label="Audio source"
-                            value={layout.audioSource}
-                            onChange={(value) =>
-                              setLayout({ ...layout, audioSource: value as LayoutState["audioSource"] })
+                          <label htmlFor="layout-audio-source">Audio source</label>
+                          <select
+                            id="layout-audio-source"
+                            value={layout.audioSourceClipId ?? "none"}
+                            disabled={exporting}
+                            onChange={(e) =>
+                              setLayout({
+                                ...layout,
+                                audioSourceClipId: e.target.value === "none" ? null : e.target.value,
+                              })
                             }
                           >
-                            <SegmentedControlItem value="main" label="Main" />
-                            <SegmentedControlItem value="second" label="Second" />
-                            <SegmentedControlItem value="none" label="None" />
-                          </SegmentedControl>
+                            <option value="none">None</option>
+                            {Array.from(new Map(layout.tiles.map((t) => [t.clipId, t])).values()).map((tile) => {
+                              const sourceClip = clips.find((c) => c.id === tile.clipId);
+                              return (
+                                <option key={tile.clipId} value={tile.clipId}>
+                                  {sourceClip ? sourceClip.file.name : tile.clipId}
+                                </option>
+                              );
+                            })}
+                          </select>
                         </div>
                       </div>
                       <Text type="supporting">
-                        Output: {layout.outputWidth} × {layout.outputHeight} · Duration: {fmtSec(outputDurationSec)} (main{" "}
-                        {fmtSec(selectionSec)} + second {fmtSec(secondSelectionSec)} with offset {fmtSec(layout.offsetSec)})
+                        Output: {layout.outputWidth} × {layout.outputHeight} · Duration: {fmtSec(outputDurationSec)} ·{" "}
+                        {layout.tiles.length} tile{layout.tiles.length === 1 ? "" : "s"}
                       </Text>
                       <Text type="supporting">
-                        Drag the tiles on the preview to move them, and use the corner handle to resize. The main video is
-                        drawn first and the second video on top. Positive offset starts the second video later.
+                        Drag the tiles on the preview to move them, and use the corner handle to resize. Tiles are drawn
+                        in list order, later tiles on top. Positive offset starts that tile later.
                       </Text>
                     </>
                   )}
@@ -1539,15 +1770,16 @@ export default function App() {
                           ? "Trim: full length. Press Trim in the toolbar to edit it."
                           : `Trim: ${fmtSec(clip.trim.startSec)} – ${fmtSec(clip.trim.endSec)} (${fmtSec(selectionSec)}). Press Trim in the toolbar to edit it.`}
                       </Text>
-                      {secondClip && layout && (
+                      {layout && (
                         <Text type="supporting">
-                          Second video: {secondClip.file.name} · Layout {layout.outputWidth} × {layout.outputHeight} · Offset{" "}
-                          {fmtSec(layout.offsetSec)} · Audio: {layout.audioSource}. Press Layout in the toolbar to edit it.
+                          Layout: {layout.tiles.length} tile{layout.tiles.length === 1 ? "" : "s"} · {layout.outputWidth} ×{" "}
+                          {layout.outputHeight} · Audio: {audioSourceName ?? "None"}. Press Layout in the toolbar to edit
+                          it, or drag another video from Media onto the canvas.
                         </Text>
                       )}
                       <Text type="supporting">
-                        {secondClip && layout
-                          ? `Output: ${layout.outputWidth} × ${layout.outputHeight} (composite of two videos)`
+                        {compositing
+                          ? `Output: ${layout.outputWidth} × ${layout.outputHeight} (composite of ${layout.tiles.length} tiles)`
                           : `Output: ${outRect.width} × ${outRect.height} (adjusted to even numbers)`}
                       </Text>
                     </>
@@ -1578,6 +1810,8 @@ export default function App() {
               </div>
             )}
           </VStack>
+            </div>
+          </div>
         </main>
       </div>
     </Theme>
