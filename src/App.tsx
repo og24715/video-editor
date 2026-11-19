@@ -360,6 +360,7 @@ export default function App() {
   const [selectedTlItemId, setSelectedTlItemId] = useState<string | null>(null);
   const [tlGhostVisible, setTlGhostVisible] = useState(false);
   const [tlGhostHot, setTlGhostHot] = useState(false);
+  const [tlDropTarget, setTlDropTarget] = useState<number | "ghost" | null>(null);
   const [tlPlaying, setTlPlaying] = useState(false);
   const [tlPlayheadSec, setTlPlayheadSec] = useState(0);
   const [tlThumbs, setTlThumbs] = useState<Record<string, string[]>>({});
@@ -389,9 +390,12 @@ export default function App() {
     itemId: string;
     trackIndex: number;
     startClientX: number;
+    startClientY: number;
     startSec: number;
     rowWidth: number;
     totalSec: number;
+    activated: boolean;
+    isText: boolean;
   } | null>(null);
   const tlEdgeDragRef = useRef<{
     itemId: string;
@@ -1035,6 +1039,102 @@ export default function App() {
     return blocks.length;
   };
 
+  type TlDropTarget = { kind: "track"; index: number } | { kind: "ghost" };
+
+  const findTlDropTarget = (clientY: number): TlDropTarget | null => {
+    const rows = Array.from(document.querySelectorAll("[data-tl-row]"));
+    if (rows.length > 0) {
+      const firstTop = rows[0].getBoundingClientRect().top;
+      if (clientY < firstTop - 2) return { kind: "ghost" };
+    }
+    for (const row of rows) {
+      const r = row.getBoundingClientRect();
+      if (clientY >= r.top && clientY <= r.bottom) {
+        return { kind: "track", index: Number(row.getAttribute("data-tl-row")) };
+      }
+    }
+    return null;
+  };
+
+  const moveItemAcrossTracks = (fromTrack: number, itemId: string, target: TlDropTarget, clientX: number) => {
+    const current = tlStateRef.current;
+    if (!current) return;
+    const item = current.tracks[fromTrack]?.items.find((it) => it.id === itemId);
+    if (!item) return;
+    if (target.kind === "track" && target.index === fromTrack) return;
+    if (item.kind === "text" && target.kind === "track" && target.index === 0) return;
+    const without = current.tracks.map((t, i) =>
+      i === fromTrack ? { ...t, items: t.items.filter((it) => it.id !== itemId) } : t,
+    );
+    if (target.kind === "ghost") {
+      setTimeline({ ...current, tracks: [...without, { id: nextTlId("track"), items: [item] }] });
+      return;
+    }
+    if (target.index === 0) {
+      const rowEl = document.querySelector('[data-tl-row="0"]') as HTMLElement | null;
+      const index = rowEl ? baseInsertIndex(rowEl, clientX) : current.tracks[0].items.length;
+      const baseItem: TimelineItem = { ...item, rect: null, startSec: 0 };
+      setTimeline({
+        ...current,
+        tracks: without.map((t, i) => {
+          if (i !== 0) return t;
+          const items = [...t.items];
+          items.splice(Math.max(0, Math.min(index, items.length)), 0, baseItem);
+          return { ...t, items };
+        }),
+      });
+      return;
+    }
+    setTimeline({
+      ...current,
+      tracks: without.map((t, i) => (i === target.index ? { ...t, items: [...t.items, item] } : t)),
+    });
+  };
+
+  const convertBaseItemToOverlay = (itemId: string): TimelineItem | null => {
+    const current = tlStateRef.current;
+    if (!current) return null;
+    const item = current.tracks[0]?.items.find((it) => it.id === itemId);
+    if (!item) return null;
+    const target = clipsRef.current.find((c) => c.id === item.clipId);
+    if (!target) return null;
+    const layout = layoutTimeline(current, clipsRef.current);
+    const entry = layout.tracks[0]?.items.find((e) => e.item.id === itemId);
+    const startSec = entry ? entry.startSec : 0;
+    const sized = evenRect(item.crop, target.meta.width, target.meta.height);
+    const outW = current.outputWidth > 0 ? current.outputWidth : sized.width;
+    const outH = current.outputHeight > 0 ? current.outputHeight : sized.height;
+    const rect = pipItemRect(outW, outH, sized.height > 0 ? sized.width / sized.height : 16 / 9);
+    return { ...item, startSec, rect };
+  };
+
+  const moveBaseItemToTrack = (itemId: string, toTrack: number) => {
+    const current = tlStateRef.current;
+    const converted = convertBaseItemToOverlay(itemId);
+    if (!current || !converted || !current.tracks[toTrack]) return;
+    setTimeline({
+      ...current,
+      tracks: current.tracks.map((t, i) => {
+        if (i === 0) return { ...t, items: t.items.filter((it) => it.id !== itemId) };
+        if (i === toTrack) return { ...t, items: [...t.items, converted] };
+        return t;
+      }),
+    });
+  };
+
+  const moveBaseItemToNewTrack = (itemId: string) => {
+    const current = tlStateRef.current;
+    const converted = convertBaseItemToOverlay(itemId);
+    if (!current || !converted) return;
+    setTimeline({
+      ...current,
+      tracks: [
+        ...current.tracks.map((t, i) => (i === 0 ? { ...t, items: t.items.filter((it) => it.id !== itemId) } : t)),
+        { id: nextTlId("track"), items: [converted] },
+      ],
+    });
+  };
+
   const beginTlBlockDrag = (event: React.PointerEvent, trackIndex: number, entry: TlItemLayout) => {
     if (exporting) return;
     event.stopPropagation();
@@ -1044,23 +1144,47 @@ export default function App() {
       itemId: entry.item.id,
       trackIndex,
       startClientX: event.clientX,
+      startClientY: event.clientY,
       startSec: entry.item.startSec,
       rowWidth: rowEl?.getBoundingClientRect().width ?? 0,
       totalSec: tlTotalSec,
+      activated: false,
+      isText: entry.item.kind === "text",
     };
     (event.currentTarget as HTMLElement).setPointerCapture(event.pointerId);
   };
 
   const onTlBlockDragMove = (event: React.PointerEvent) => {
     const drag = tlBlockDragRef.current;
-    if (!drag || drag.rowWidth <= 0 || drag.totalSec <= 0) return;
-    const dxSec = ((event.clientX - drag.startClientX) / drag.rowWidth) * drag.totalSec;
-    const next = Math.max(0, Math.round((drag.startSec + dxSec) * 10) / 10);
-    updateTlItem(drag.trackIndex, drag.itemId, { startSec: next });
+    if (!drag) return;
+    if (!drag.activated) {
+      const moved = Math.abs(event.clientX - drag.startClientX) + Math.abs(event.clientY - drag.startClientY);
+      if (moved > 6) drag.activated = true;
+    }
+    if (drag.rowWidth > 0 && drag.totalSec > 0) {
+      const dxSec = ((event.clientX - drag.startClientX) / drag.rowWidth) * drag.totalSec;
+      const next = Math.max(0, Math.round((drag.startSec + dxSec) * 10) / 10);
+      updateTlItem(drag.trackIndex, drag.itemId, { startSec: next });
+    }
+    if (drag.activated) {
+      const target = findTlDropTarget(event.clientY);
+      const nextTarget: number | "ghost" | null =
+        target === null ? null : target.kind === "ghost" ? "ghost" : target.index;
+      const shown = drag.isText && nextTarget === 0 ? null : nextTarget;
+      setTlDropTarget((prev) => (prev === shown ? prev : shown));
+    }
   };
 
-  const endTlBlockDrag = () => {
+  const endTlBlockDrag = (event?: React.PointerEvent) => {
+    const drag = tlBlockDragRef.current;
     tlBlockDragRef.current = null;
+    const target = drag && event && drag.activated ? findTlDropTarget(event.clientY) : null;
+    setTlDropTarget(null);
+    setTlGhostVisible(false);
+    setTlGhostHot(false);
+    if (!drag || !event || !target) return;
+    if (target.kind === "track" && target.index === drag.trackIndex) return;
+    moveItemAcrossTracks(drag.trackIndex, drag.itemId, target, event.clientX);
   };
 
   const applyItemTrim = useCallback(
@@ -2003,37 +2127,53 @@ export default function App() {
                   <div
                     className="tl-strip"
                     onDragEnter={(e) => {
-                      if (Array.from(e.dataTransfer.types).includes(POOL_DRAG_TYPE)) setTlGhostVisible(true);
+                      const types = Array.from(e.dataTransfer.types);
+                      if (types.includes(POOL_DRAG_TYPE) || types.includes(TL_ITEM_DRAG_TYPE)) setTlGhostVisible(true);
                     }}
                     onDragOver={(e) => {
-                      if (Array.from(e.dataTransfer.types).includes(POOL_DRAG_TYPE)) setTlGhostVisible(true);
+                      const types = Array.from(e.dataTransfer.types);
+                      if (types.includes(POOL_DRAG_TYPE) || types.includes(TL_ITEM_DRAG_TYPE)) setTlGhostVisible(true);
                     }}
                     onDragLeave={(e) => {
                       if (!e.currentTarget.contains(e.relatedTarget as Node | null)) {
                         setTlGhostVisible(false);
                         setTlGhostHot(false);
+                        setTlDropTarget(null);
                       }
                     }}
                     onDrop={() => {
                       setTlGhostVisible(false);
                       setTlGhostHot(false);
+                      setTlDropTarget(null);
                     }}
                   >
+                    {tlDropTarget === "ghost" && (
+                      <div className="tl-ghost-pill">Drop here to start a new track</div>
+                    )}
                     {tlGhostVisible && (
                       <div className="tl-row">
                         <div className="tl-row-label">New</div>
                         <div
-                          className={`tl-row-track tl-ghost-track${tlGhostHot ? " hot" : ""}`}
+                          className={`tl-row-track tl-ghost-track${tlGhostHot || tlDropTarget === "ghost" ? " hot" : ""}`}
                           data-tl-ghost="true"
                           onDragOver={(e) => {
-                            if (Array.from(e.dataTransfer.types).includes(POOL_DRAG_TYPE)) {
+                            const types = Array.from(e.dataTransfer.types);
+                            if (types.includes(POOL_DRAG_TYPE) || types.includes(TL_ITEM_DRAG_TYPE)) {
                               e.preventDefault();
-                              e.dataTransfer.dropEffect = "copy";
+                              e.dataTransfer.dropEffect = types.includes(POOL_DRAG_TYPE) ? "copy" : "move";
                               setTlGhostHot(true);
                             }
                           }}
                           onDragLeave={() => setTlGhostHot(false)}
                           onDrop={(e) => {
+                            const types = Array.from(e.dataTransfer.types);
+                            if (types.includes(TL_ITEM_DRAG_TYPE)) {
+                              const itemId = e.dataTransfer.getData(TL_ITEM_DRAG_TYPE);
+                              if (!itemId) return;
+                              e.preventDefault();
+                              moveBaseItemToNewTrack(itemId);
+                              return;
+                            }
                             const droppedClipId =
                               e.dataTransfer.getData(POOL_DRAG_TYPE) || e.dataTransfer.getData("text/plain");
                             if (!droppedClipId || !clipsRef.current.some((c) => c.id === droppedClipId)) return;
@@ -2057,7 +2197,7 @@ export default function App() {
                           <div className="tl-row" key={trackLayout.track.id}>
                             <div className="tl-row-label">{trackIndex === 0 ? "V1 · Base" : `V${trackIndex + 1}`}</div>
                             <div
-                              className="tl-row-track"
+                              className={`tl-row-track${tlDropTarget === trackIndex ? " drop-target" : ""}`}
                               data-tl-row={trackIndex}
                               onPointerDown={(e) => {
                                 if (exporting || tlTotalSec <= 0) return;
@@ -2067,19 +2207,28 @@ export default function App() {
                               }}
                               onDragOver={(e) => {
                                 const types = Array.from(e.dataTransfer.types);
-                                if (types.includes(POOL_DRAG_TYPE) || (trackIndex === 0 && types.includes(TL_ITEM_DRAG_TYPE))) {
+                                if (types.includes(POOL_DRAG_TYPE) || types.includes(TL_ITEM_DRAG_TYPE)) {
                                   e.preventDefault();
                                   e.dataTransfer.dropEffect = types.includes(POOL_DRAG_TYPE) ? "copy" : "move";
+                                  if (types.includes(TL_ITEM_DRAG_TYPE)) setTlDropTarget(trackIndex);
                                 }
                               }}
                               onDrop={(e) => {
                                 const types = Array.from(e.dataTransfer.types);
                                 const rowEl = e.currentTarget;
+                                setTlDropTarget(null);
                                 if (trackIndex === 0 && types.includes(TL_ITEM_DRAG_TYPE)) {
                                   const itemId = e.dataTransfer.getData(TL_ITEM_DRAG_TYPE);
                                   if (!itemId) return;
                                   e.preventDefault();
                                   reorderBaseItem(itemId, baseInsertIndex(rowEl, e.clientX));
+                                  return;
+                                }
+                                if (trackIndex > 0 && types.includes(TL_ITEM_DRAG_TYPE)) {
+                                  const itemId = e.dataTransfer.getData(TL_ITEM_DRAG_TYPE);
+                                  if (!itemId) return;
+                                  e.preventDefault();
+                                  moveBaseItemToTrack(itemId, trackIndex);
                                   return;
                                 }
                                 if (types.includes(POOL_DRAG_TYPE)) {
@@ -2113,6 +2262,11 @@ export default function App() {
                                     onDragStart={(e) => {
                                       e.dataTransfer.setData(TL_ITEM_DRAG_TYPE, entry.item.id);
                                       e.dataTransfer.effectAllowed = "move";
+                                    }}
+                                    onDragEnd={() => {
+                                      setTlGhostVisible(false);
+                                      setTlGhostHot(false);
+                                      setTlDropTarget(null);
                                     }}
                                     onPointerDown={() => setSelectedTlItemId(entry.item.id)}
                                     onClick={() => setSelectedTlItemId(entry.item.id)}
@@ -2318,9 +2472,9 @@ export default function App() {
                       })}
                     <Text type="supporting">
                       {fmtSec(tlPlayheadSec)} / {fmtSec(tlTotalSec)} · Click a clip to select it; click a track to
-                      seek. Drag base clips to reorder them; drag overlay clips sideways to move them in time. Drag
-                      a clip's edges to trim it (an image or text clip's right edge sets its duration); double-click
-                      a clip to edit it.
+                      seek. Drag base clips to reorder them; drag overlay clips sideways to move them in time, or
+                      drag any clip up or down to move it to another track. Drag a clip's edges to trim it (an
+                      image or text clip's right edge sets its duration); double-click a clip to edit it.
                     </Text>
                   </div>
                 )}
