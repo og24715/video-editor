@@ -1878,6 +1878,7 @@ export default function App() {
                                       e.dataTransfer.effectAllowed = "move";
                                     }}
                                     onPointerDown={() => setSelectedTlItemId(entry.item.id)}
+                                    onClick={() => setSelectedTlItemId(entry.item.id)}
                                     onDoubleClick={() => {
                                       setCropClipId(entry.clip.id);
                                       setDrawerItemId(entry.item.id);
@@ -1938,6 +1939,7 @@ export default function App() {
                                         width: `${tlTotalSec > 0 ? (entry.durationSec / tlTotalSec) * 100 : 0}%`,
                                       }}
                                       onPointerDown={(e) => beginTlBlockDrag(e, trackIndex, entry)}
+                                      onClick={() => setSelectedTlItemId(entry.item.id)}
                                       onDoubleClick={() => {
                                         setCropClipId(entry.clip.id);
                                         setDrawerItemId(entry.item.id);
@@ -2005,9 +2007,9 @@ export default function App() {
                         );
                       })}
                     <Text type="supporting">
-                      {fmtSec(tlPlayheadSec)} / {fmtSec(tlTotalSec)} · Click a track to seek. Drag base clips to
-                      reorder them; drag overlay clips sideways to move them in time. Drag a block's edges to trim
-                      it; double-click a block to edit its crop and trim.
+                      {fmtSec(tlPlayheadSec)} / {fmtSec(tlTotalSec)} · Click a block to select it; click a track to
+                      seek. Drag base clips to reorder them; drag overlay clips sideways to move them in time. Drag
+                      a block's edges to trim it; double-click a block to edit its crop and trim.
                     </Text>
                   </div>
                 )}
