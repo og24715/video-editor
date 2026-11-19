@@ -36,6 +36,22 @@ export interface Clip {
 
 export const DEFAULT_IMAGE_DURATION_SEC = 5;
 
+export type TextPosition = "bottom" | "center" | "top";
+
+export interface TextStyle {
+  fontSizePct: number;
+  color: string;
+  outline: boolean;
+  position: TextPosition;
+}
+
+export const DEFAULT_TEXT_STYLE: TextStyle = {
+  fontSizePct: 6,
+  color: "#ffffff",
+  outline: true,
+  position: "bottom",
+};
+
 export type AspectPreset = "free" | "16:9" | "9:16" | "1:1" | "4:3";
 
 export function evenRect(crop: CropRect, maxWidth: number, maxHeight: number): CropRect {
@@ -65,14 +81,19 @@ export interface LayoutTile {
 export interface TimelineItem {
   id: string;
   clipId: string;
+  kind: "media" | "text";
   startSec: number;
   rect: TileRect | null;
   trim: TrimRange;
   crop: CropRect;
   durationSec: number | null;
+  text?: string;
+  textStyle?: TextStyle;
 }
 
-export function timelineItemDurationSec(item: TimelineItem, clip: Clip): number {
+export function timelineItemDurationSec(item: TimelineItem, clip: Clip | null): number {
+  if (item.kind === "text") return Math.max(0, item.durationSec ?? DEFAULT_IMAGE_DURATION_SEC);
+  if (!clip) return 0;
   if (clip.kind === "image") return Math.max(0, item.durationSec ?? DEFAULT_IMAGE_DURATION_SEC);
   return Math.max(0, item.trim.endSec - item.trim.startSec);
 }

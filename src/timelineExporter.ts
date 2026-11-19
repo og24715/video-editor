@@ -8,7 +8,7 @@ import {
   Output,
 } from "mediabunny";
 import type { AudioCodec, Input, InputVideoTrack } from "mediabunny";
-import type { CropRect, MediaKind, TileRect, TrimRange } from "./model";
+import type { CropRect, MediaKind, TextStyle, TileRect, TrimRange } from "./model";
 import { containRect } from "./model";
 import { ExportCancelledError, chooseCodec } from "./exporter";
 import { FramePump, clampRange } from "./compositeExporter";
@@ -37,9 +37,17 @@ export interface TimelineOverlayItemSpec {
   rect: TileRect;
 }
 
+export interface TimelineTextItemSpec {
+  text: string;
+  startSec: number;
+  durationSec: number;
+  style: TextStyle;
+}
+
 export interface TimelineExportOptions {
   base: TimelineBaseItemSpec[];
   overlays: TimelineOverlayItemSpec[];
+  texts: TimelineTextItemSpec[];
   outputWidth: number;
   outputHeight: number;
   onProgress: (ratio: number) => void;
@@ -54,7 +62,7 @@ export interface TimelineExportResult {
 }
 
 interface ResolvedItem {
-  kind: MediaKind;
+  kind: MediaKind | "text";
   input: Input | null;
   track: InputVideoTrack | null;
   bitmap: ImageBitmap | null;
@@ -64,10 +72,45 @@ interface ResolvedItem {
   durationSec: number;
   rect: TileRect;
   isBase: boolean;
+  text?: string;
+  style?: TextStyle;
+}
+
+function drawTextItem(
+  ctx: OffscreenCanvasRenderingContext2D,
+  text: string,
+  style: TextStyle,
+  outWidth: number,
+  outHeight: number,
+): void {
+  const fontPx = Math.max(4, (style.fontSizePct / 100) * outHeight);
+  const lines = text.split("\n");
+  const lineHeight = fontPx * 1.25;
+  const blockHeight = lineHeight * lines.length;
+  const margin = outHeight * 0.05;
+  let blockTop: number;
+  if (style.position === "top") blockTop = margin;
+  else if (style.position === "center") blockTop = (outHeight - blockHeight) / 2;
+  else blockTop = outHeight - margin - blockHeight;
+  ctx.font = `700 ${fontPx}px sans-serif`;
+  ctx.textAlign = "center";
+  ctx.textBaseline = "alphabetic";
+  for (let i = 0; i < lines.length; i++) {
+    const baseline = blockTop + fontPx + i * lineHeight;
+    if (style.outline) {
+      ctx.strokeStyle = "#000000";
+      ctx.lineWidth = Math.max(1, fontPx / 10);
+      ctx.lineJoin = "round";
+      ctx.strokeText(lines[i], outWidth / 2, baseline);
+    }
+    ctx.fillStyle = style.color;
+    ctx.fillText(lines[i], outWidth / 2, baseline);
+  }
 }
 
 export async function exportTimeline(options: TimelineExportOptions): Promise<TimelineExportResult> {
-  if (options.base.length === 0 && options.overlays.length === 0) throw new Error("No timeline items to export.");
+  if (options.base.length === 0 && options.overlays.length === 0 && options.texts.length === 0)
+    throw new Error("No timeline items to export.");
 
   const outWidth = Math.max(2, Math.round(options.outputWidth) - (Math.round(options.outputWidth) % 2));
   const outHeight = Math.max(2, Math.round(options.outputHeight) - (Math.round(options.outputHeight) % 2));
@@ -135,6 +178,25 @@ export async function exportTimeline(options: TimelineExportOptions): Promise<Ti
       height: Math.max(2, Math.round(spec.rect.height)),
     };
     items.push(await resolveItem(spec, Math.max(0, spec.startSec), rect, false));
+  }
+  for (const spec of options.texts) {
+    const startSec = Math.max(0, spec.startSec);
+    const durationSec = Math.max(0.1, spec.durationSec);
+    items.push({
+      kind: "text",
+      input: null,
+      track: null,
+      bitmap: null,
+      trim: { startSec: 0, endSec: durationSec },
+      crop: { x: 0, y: 0, width: 0, height: 0 },
+      startSec,
+      durationSec,
+      rect: { x: 0, y: 0, width: outWidth, height: outHeight },
+      isBase: false,
+      text: spec.text,
+      style: spec.style,
+    });
+    outputDuration = Math.max(outputDuration, startSec + durationSec);
   }
   if (!(outputDuration > 0)) throw new Error("Nothing to export: all timeline ranges are empty.");
 
@@ -252,6 +314,10 @@ export async function exportTimeline(options: TimelineExportOptions): Promise<Ti
         const item = items[k];
         const local = t - item.startSec;
         if (local < -0.0005 || local >= item.durationSec) continue;
+        if (item.kind === "text") {
+          if (item.text && item.style) drawTextItem(ctx, item.text, item.style, outWidth, outHeight);
+          continue;
+        }
         const crop = item.crop;
         if (item.bitmap) {
           ctx.drawImage(item.bitmap, crop.x, crop.y, crop.width, crop.height, item.rect.x, item.rect.y, item.rect.width, item.rect.height);

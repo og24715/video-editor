@@ -604,6 +604,39 @@ body {
   z-index: 2;
 }
 
+.tl-block-text {
+  background: #453152;
+}
+
+.tl-text-glyph {
+  flex: 1 1 0;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: rgba(255, 255, 255, 0.85);
+  pointer-events: none;
+}
+
+.tl-stage-text {
+  position: absolute;
+  left: 0;
+  right: 0;
+  padding: 0 4%;
+  box-sizing: border-box;
+  text-align: center;
+  white-space: pre-line;
+  font-weight: 700;
+  line-height: 1.25;
+  pointer-events: none;
+}
+
+.field input[type="color"] {
+  padding: 4px;
+  height: 46px;
+  cursor: pointer;
+}
+
 .tl-block-label {
   position: absolute;
   left: 6px;

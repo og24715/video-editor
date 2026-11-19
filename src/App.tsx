@@ -11,9 +11,11 @@ import { Drawer, DrawerHeader } from "@astryxdesign/core/Drawer";
 import { HStack } from "@astryxdesign/core/HStack";
 import { VStack } from "@astryxdesign/core/VStack";
 import { Spinner } from "@astryxdesign/core/Spinner";
-import { FolderOpen } from "lucide-react";
-import type { AspectPreset, Clip, CropRect, LayoutTile, MediaMeta, TileRect, TimelineItem, TimelineState, TimelineTrack, TrimRange } from "./model";
-import { DEFAULT_IMAGE_DURATION_SEC, clampOutputSize, containRect, evenRect, pipItemRect, refitRectToAspect, resizedTiles, timelineItemDurationSec } from "./model";
+import { Switch } from "@astryxdesign/core/Switch";
+import { TextArea } from "@astryxdesign/core/TextArea";
+import { FolderOpen, Type } from "lucide-react";
+import type { AspectPreset, Clip, CropRect, LayoutTile, MediaMeta, TextPosition, TextStyle, TileRect, TimelineItem, TimelineState, TimelineTrack, TrimRange } from "./model";
+import { DEFAULT_IMAGE_DURATION_SEC, DEFAULT_TEXT_STYLE, clampOutputSize, containRect, evenRect, pipItemRect, refitRectToAspect, resizedTiles, timelineItemDurationSec } from "./model";
 import { ExportCancelledError, exportCropped, openInput, readMeta, webCodecsSupported } from "./exporter";
 import { exportTimeline } from "./timelineExporter";
 import { exportGif, gifOutputSize } from "./gifExporter";
@@ -227,7 +229,7 @@ const TL_ITEM_DRAG_TYPE = "application/x-video-editor-tl-item";
 
 interface TlItemLayout {
   item: TimelineItem;
-  clip: Clip;
+  clip: Clip | null;
   startSec: number;
   durationSec: number;
 }
@@ -247,6 +249,16 @@ function layoutTimeline(
     let cursor = 0;
     const items: TlItemLayout[] = [];
     for (const item of track.items) {
+      if (item.kind === "text") {
+        const durationSec = timelineItemDurationSec(item, null);
+        const startSec = trackIndex === 0 ? cursor : Math.max(0, item.startSec);
+        cursor += durationSec;
+        const endSec = startSec + durationSec;
+        if (trackIndex === 0) baseEndSec = Math.max(baseEndSec, endSec);
+        totalSec = Math.max(totalSec, endSec);
+        items.push({ item, clip: null, startSec, durationSec });
+        continue;
+      }
       const itemClip = clips.find((c) => c.id === item.clipId);
       if (!itemClip) continue;
       const durationSec = timelineItemDurationSec(item, itemClip);
@@ -336,6 +348,8 @@ export default function App() {
   const [audioCopied, setAudioCopied] = useState<boolean | null>(null);
   const [cropClipId, setCropClipId] = useState<string | null>(null);
   const [drawerItemId, setDrawerItemId] = useState<string | null>(null);
+  const [drawerTextItemId, setDrawerTextItemId] = useState<string | null>(null);
+  const [tlStageSize, setTlStageSize] = useState<{ w: number; h: number }>({ w: 0, h: 0 });
   const [timeline, setTimeline] = useState<TimelineState>(() => ({
     outputWidth: 0,
     outputHeight: 0,
@@ -389,7 +403,7 @@ export default function App() {
     origTrim: TrimRange;
     origStartSec: number;
     clipDurationSec: number;
-    isImage: boolean;
+    isDuration: boolean;
     origDurationSec: number;
   } | null>(null);
   const tlClockRef = useRef<number | null>(null);
@@ -621,7 +635,7 @@ export default function App() {
       const baseEntry = data.tracks[0]?.items.find(
         (e) => tlGlobalRef.current >= e.startSec && tlGlobalRef.current < e.startSec + e.durationSec,
       );
-      if (baseEntry && baseEntry.clip.kind === "video") {
+      if (baseEntry && baseEntry.clip?.kind === "video") {
         const el = tlVideoRefs.current.get(baseEntry.item.id);
         if (el && !el.paused) return;
       }
@@ -799,6 +813,7 @@ export default function App() {
           : prev,
       );
       setSelectedTlItemId((prev) => (prev === itemId ? null : prev));
+      setDrawerTextItemId((prev) => (prev === itemId ? null : prev));
     },
     [],
   );
@@ -826,6 +841,7 @@ export default function App() {
     const item: TimelineItem = {
       id: nextTlId("tlitem"),
       clipId,
+      kind: "media",
       startSec: 0,
       rect: null,
       trim: { ...target.trim },
@@ -867,6 +883,7 @@ export default function App() {
         const item: TimelineItem = {
           id: itemId,
           clipId,
+          kind: "media",
           startSec: Math.max(0, Math.round(startSec * 10) / 10),
           rect,
           trim: { ...target.trim },
@@ -901,6 +918,7 @@ export default function App() {
         const item: TimelineItem = {
           id: itemId,
           clipId,
+          kind: "media",
           startSec: Math.max(0, Math.round(startSec * 10) / 10),
           rect,
           trim: { ...target.trim },
@@ -913,6 +931,36 @@ export default function App() {
     },
     [],
   );
+
+  const addTextClip = useCallback(() => {
+    const itemId = nextTlId("tlitem");
+    const total = tlEntries()?.totalSec ?? 0;
+    const playhead = tlGlobalRef.current;
+    const startSec = playhead > total ? 0 : Math.max(0, Math.round(playhead * 10) / 10);
+    const item: TimelineItem = {
+      id: itemId,
+      clipId: "",
+      kind: "text",
+      startSec,
+      rect: null,
+      trim: { startSec: 0, endSec: 0 },
+      crop: { x: 0, y: 0, width: 0, height: 0 },
+      durationSec: DEFAULT_IMAGE_DURATION_SEC,
+      text: "Text",
+      textStyle: { ...DEFAULT_TEXT_STYLE },
+    };
+    setTimeline((prev) => {
+      const base: TimelineState =
+        prev ?? { outputWidth: 0, outputHeight: 0, tracks: [{ id: nextTlId("track"), items: [] }] };
+      const withSize =
+        base.outputWidth > 0 && base.outputHeight > 0 ? base : { ...base, outputWidth: 1280, outputHeight: 720 };
+      return { ...withSize, tracks: [...withSize.tracks, { id: nextTlId("track"), items: [item] }] };
+    });
+    setSelectedTlItemId(itemId);
+    setCropClipId(null);
+    setDrawerItemId(null);
+    setDrawerTextItemId(itemId);
+  }, [tlEntries]);
 
   const reorderBaseItem = useCallback((itemId: string, rawTargetIndex: number) => {
     setTimeline((prev) => {
@@ -1017,6 +1065,7 @@ export default function App() {
 
   const applyItemTrim = useCallback(
     (trackIndex: number, entry: TlItemLayout, nextRaw: TrimRange) => {
+      if (!entry.clip) return;
       const clamped = clampTrim(nextRaw, entry.clip.meta.durationSec);
       if (trackIndex === 0) {
         updateTlItem(0, entry.item.id, { trim: clamped });
@@ -1046,8 +1095,8 @@ export default function App() {
       totalSec: tlTotalSec,
       origTrim: { ...entry.item.trim },
       origStartSec: entry.item.startSec,
-      clipDurationSec: entry.clip.meta.durationSec,
-      isImage: entry.clip.kind === "image",
+      clipDurationSec: entry.clip?.meta.durationSec ?? 0,
+      isDuration: entry.item.kind === "text" || entry.clip?.kind === "image",
       origDurationSec: entry.durationSec,
     };
     (event.currentTarget as HTMLElement).setPointerCapture(event.pointerId);
@@ -1057,7 +1106,7 @@ export default function App() {
     const drag = tlEdgeDragRef.current;
     if (!drag || drag.rowWidth <= 0 || drag.totalSec <= 0) return;
     const dxSec = ((event.clientX - drag.startClientX) / drag.rowWidth) * drag.totalSec;
-    if (drag.isImage) {
+    if (drag.isDuration) {
       if (drag.edge === "end") {
         const next = Math.round(Math.max(0.1, drag.origDurationSec + dxSec) * 1000) / 1000;
         updateTlItem(drag.trackIndex, drag.itemId, { durationSec: next });
@@ -1106,7 +1155,7 @@ export default function App() {
     tlPlayingRef.current = true;
     setTlPlaying(true);
     const baseEntry = data.tracks[0]?.items.find((e) => global >= e.startSec && global < e.startSec + e.durationSec);
-    if (baseEntry && baseEntry.clip.kind === "video") {
+    if (baseEntry && baseEntry.clip?.kind === "video") {
       const el = tlVideoRefs.current.get(baseEntry.item.id);
       if (el) {
         const target = baseEntry.item.trim.startSec + (global - baseEntry.startSec);
@@ -1155,7 +1204,7 @@ export default function App() {
     } else {
       const data = tlEntries();
       const entry = data?.tracks[drag.trackIndex]?.items.find((e) => e.item.id === drag.itemId);
-      const aspect = entry ? itemCropAspect(entry.item, entry.clip) : 16 / 9;
+      const aspect = entry && entry.clip ? itemCropAspect(entry.item, entry.clip) : 16 / 9;
       let width = Math.max(32, Math.min(s.width + dx, timeline.outputWidth - s.x));
       let height = width / aspect;
       if (s.y + height > timeline.outputHeight) {
@@ -1221,18 +1270,33 @@ export default function App() {
         tlData.tracks.some((t) => t.items.length > 0) &&
         timeline.outputWidth > 0;
       if (tlExportReady && timeline && tlData) {
-        const baseSpecs = tlData.tracks[0].items.map((entry) => ({
-          kind: entry.clip.kind,
-          input: entry.clip.input,
-          file: entry.clip.file,
-          trim: entry.item.trim,
-          crop: evenRect(entry.item.crop, entry.clip.meta.width, entry.clip.meta.height),
-          durationSec: entry.clip.kind === "image" ? entry.durationSec : undefined,
-        }));
+        const baseSpecs = tlData.tracks[0].items.flatMap((entry) => {
+          if (!entry.clip) return [];
+          return [
+            {
+              kind: entry.clip.kind,
+              input: entry.clip.input,
+              file: entry.clip.file,
+              trim: entry.item.trim,
+              crop: evenRect(entry.item.crop, entry.clip.meta.width, entry.clip.meta.height),
+              durationSec: entry.clip.kind === "image" ? entry.durationSec : undefined,
+            },
+          ];
+        });
         const overlaySpecs = [];
+        const textSpecs = [];
         for (let ti = 1; ti < tlData.tracks.length; ti++) {
           for (const entry of tlData.tracks[ti].items) {
-            if (!entry.item.rect) continue;
+            if (entry.item.kind === "text") {
+              textSpecs.push({
+                text: entry.item.text ?? "",
+                startSec: entry.startSec,
+                durationSec: entry.durationSec,
+                style: entry.item.textStyle ?? DEFAULT_TEXT_STYLE,
+              });
+              continue;
+            }
+            if (!entry.clip || !entry.item.rect) continue;
             overlaySpecs.push({
               kind: entry.clip.kind,
               input: entry.clip.input,
@@ -1248,6 +1312,7 @@ export default function App() {
         const res = await exportTimeline({
           base: baseSpecs,
           overlays: overlaySpecs,
+          texts: textSpecs,
           outputWidth: timeline.outputWidth,
           outputHeight: timeline.outputHeight,
           onProgress: (value) => setProgress(value),
@@ -1374,6 +1439,7 @@ export default function App() {
     return null;
   })();
   const activeBaseId = activeBaseEntry?.item.id ?? null;
+  const activeBaseClip = activeBaseEntry?.clip ?? null;
   const selectedTl = (() => {
     if (!tlLayout || !selectedTlItemId) return null;
     for (let ti = 0; ti < tlLayout.tracks.length; ti++) {
@@ -1390,6 +1456,21 @@ export default function App() {
     }
     return null;
   })();
+  const drawerTextItem = (() => {
+    if (!drawerTextItemId || !timeline) return null;
+    for (let ti = 0; ti < timeline.tracks.length; ti++) {
+      const found = timeline.tracks[ti].items.find((it) => it.id === drawerTextItemId);
+      if (found) return { item: found, trackIndex: ti };
+    }
+    return null;
+  })();
+  const drawerTextStyle: TextStyle = drawerTextItem?.item.textStyle ?? DEFAULT_TEXT_STYLE;
+  const updateDrawerTextStyle = (patch: Partial<TextStyle>) => {
+    if (!drawerTextItem) return;
+    updateTlItem(drawerTextItem.trackIndex, drawerTextItem.item.id, {
+      textStyle: { ...drawerTextStyle, ...patch },
+    });
+  };
   const drawerTrim: TrimRange = drawerItem ? drawerItem.item.trim : (cropClip?.trim ?? { startSec: 0, endSec: 0 });
   const applyDrawerTrim = (nextRaw: TrimRange) => {
     if (!cropClip) return;
@@ -1420,6 +1501,7 @@ export default function App() {
   const closeDrawer = () => {
     setCropClipId(null);
     setDrawerItemId(null);
+    setDrawerTextItemId(null);
   };
   const isLargeTlCanvas =
     timeline.outputWidth > 0 && (timeline.outputWidth > 3840 || timeline.outputWidth * timeline.outputHeight > 8_300_000);
@@ -1432,6 +1514,19 @@ export default function App() {
           height: `${(rect.height / timeline.outputHeight) * 100}%`,
         }
       : {};
+
+  useEffect(() => {
+    const el = tlStageRef.current;
+    if (!el) return;
+    const measure = () => {
+      const r = el.getBoundingClientRect();
+      setTlStageSize({ w: r.width, h: r.height });
+    };
+    measure();
+    const ro = new ResizeObserver(measure);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [tlHasItems, timeline.outputWidth, timeline.outputHeight]);
 
   useEffect(() => {
     if (!activeBaseId) return;
@@ -1675,18 +1770,18 @@ export default function App() {
                         ref={tlStageRef}
                         style={{ aspectRatio: `${timeline.outputWidth} / ${timeline.outputHeight}` }}
                       >
-                        {activeBaseEntry && (
+                        {activeBaseEntry && activeBaseClip && (
                           <div
                             className="tl-base-video"
                             key={activeBaseEntry.item.id}
-                            style={baseVideoBoxStyle(activeBaseEntry.clip.meta, activeBaseEntry.item.crop, timeline.outputWidth, timeline.outputHeight)}
+                            style={baseVideoBoxStyle(activeBaseClip.meta, activeBaseEntry.item.crop, timeline.outputWidth, timeline.outputHeight)}
                           >
-                            {activeBaseEntry.clip.kind === "image" ? (
+                            {activeBaseClip.kind === "image" ? (
                               <img
-                                src={activeBaseEntry.clip.url}
+                                src={activeBaseClip.url}
                                 alt=""
                                 draggable={false}
-                                style={subRectVideoStyle(activeBaseEntry.clip.meta, activeBaseEntry.item.crop)}
+                                style={subRectVideoStyle(activeBaseClip.meta, activeBaseEntry.item.crop)}
                               />
                             ) : (
                               <video
@@ -1694,16 +1789,17 @@ export default function App() {
                                   if (el) tlVideoRefs.current.set(activeBaseEntry.item.id, el);
                                   else tlVideoRefs.current.delete(activeBaseEntry.item.id);
                                 }}
-                                src={activeBaseEntry.clip.url}
+                                src={activeBaseClip.url}
                                 playsInline
-                                style={subRectVideoStyle(activeBaseEntry.clip.meta, activeBaseEntry.item.crop)}
+                                style={subRectVideoStyle(activeBaseClip.meta, activeBaseEntry.item.crop)}
                               />
                             )}
                           </div>
                         )}
                         {tlLayout.tracks.slice(1).flatMap((trackLayout, ti) =>
                           trackLayout.items.map((entry, ii) => {
-                            if (!entry.item.rect) return null;
+                            const entryClip = entry.clip;
+                            if (!entry.item.rect || !entryClip) return null;
                             const trackIndex = ti + 1;
                             const isActive =
                               tlPlayheadSec >= entry.startSec && tlPlayheadSec < entry.startSec + entry.durationSec;
@@ -1730,12 +1826,12 @@ export default function App() {
                                 onPointerUp={endTlTileDrag}
                                 onPointerCancel={endTlTileDrag}
                               >
-                                {entry.clip.kind === "image" ? (
+                                {entryClip.kind === "image" ? (
                                   <img
-                                    src={entry.clip.url}
+                                    src={entryClip.url}
                                     alt=""
                                     draggable={false}
-                                    style={subRectVideoStyle(entry.clip.meta, entry.item.crop)}
+                                    style={subRectVideoStyle(entryClip.meta, entry.item.crop)}
                                   />
                                 ) : (
                                   <video
@@ -1743,10 +1839,10 @@ export default function App() {
                                       if (el) tlVideoRefs.current.set(entry.item.id, el);
                                       else tlVideoRefs.current.delete(entry.item.id);
                                     }}
-                                    src={entry.clip.url}
+                                    src={entryClip.url}
                                     playsInline
                                     muted
-                                    style={subRectVideoStyle(entry.clip.meta, entry.item.crop)}
+                                    style={subRectVideoStyle(entryClip.meta, entry.item.crop)}
                                   />
                                 )}
                                 {isSelected && (
@@ -1758,6 +1854,49 @@ export default function App() {
                                     onPointerCancel={endTlTileDrag}
                                   />
                                 )}
+                              </div>
+                            );
+                          }),
+                        )}
+                        {tlLayout.tracks.slice(1).flatMap((trackLayout, ti) =>
+                          trackLayout.items.map((entry) => {
+                            if (entry.item.kind !== "text") return null;
+                            const trackIndex = ti + 1;
+                            const isActive =
+                              tlPlayheadSec >= entry.startSec && tlPlayheadSec < entry.startSec + entry.durationSec;
+                            if (!isActive) return null;
+                            const style = entry.item.textStyle ?? DEFAULT_TEXT_STYLE;
+                            const stageH =
+                              tlStageSize.h > 0
+                                ? tlStageSize.h
+                                : tlStageSize.w > 0
+                                  ? (tlStageSize.w * timeline.outputHeight) / Math.max(1, timeline.outputWidth)
+                                  : 0;
+                            const fontPx = Math.max(4, (style.fontSizePct / 100) * stageH);
+                            const outlinePx = Math.max(1, fontPx / 10);
+                            const shadow = style.outline
+                              ? `${outlinePx}px 0 0 #000, ${-outlinePx}px 0 0 #000, 0 ${outlinePx}px 0 #000, 0 ${-outlinePx}px 0 #000, ${outlinePx}px ${outlinePx}px 0 #000, ${-outlinePx}px ${-outlinePx}px 0 #000, ${outlinePx}px ${-outlinePx}px 0 #000, ${-outlinePx}px ${outlinePx}px 0 #000`
+                              : undefined;
+                            const posStyle: React.CSSProperties =
+                              style.position === "top"
+                                ? { top: "5%" }
+                                : style.position === "center"
+                                  ? { top: "50%", transform: "translateY(-50%)" }
+                                  : { bottom: "5%" };
+                            return (
+                              <div
+                                key={entry.item.id}
+                                className="tl-stage-text"
+                                data-tl-stage-text={entry.item.id}
+                                style={{
+                                  ...posStyle,
+                                  fontSize: fontPx,
+                                  color: style.color,
+                                  textShadow: shadow,
+                                  zIndex: trackIndex * 100 + 99,
+                                }}
+                              >
+                                {entry.item.text ?? ""}
                               </div>
                             );
                           }),
@@ -1960,7 +2099,10 @@ export default function App() {
                               }}
                             >
                               {trackIndex === 0 &&
-                                trackLayout.items.map((entry) => (
+                                trackLayout.items.map((entry) => {
+                                  const entryClip = entry.clip;
+                                  if (!entryClip) return null;
+                                  return (
                                   <div
                                     key={entry.item.id}
                                     className={`tl-block${entry.item.id === selectedTlItemId ? " selected" : ""}`}
@@ -1975,16 +2117,16 @@ export default function App() {
                                     onPointerDown={() => setSelectedTlItemId(entry.item.id)}
                                     onClick={() => setSelectedTlItemId(entry.item.id)}
                                     onDoubleClick={() => {
-                                      setCropClipId(entry.clip.id);
+                                      setCropClipId(entryClip.id);
                                       setDrawerItemId(entry.item.id);
                                     }}
                                   >
                                     <div className="tl-thumbs">
-                                      {entry.clip.kind === "image" ? (
-                                        <img className="tl-block-img" src={entry.clip.url} alt="" draggable={false} />
+                                      {entryClip.kind === "image" ? (
+                                        <img className="tl-block-img" src={entryClip.url} alt="" draggable={false} />
                                       ) : (
                                         (
-                                          tlThumbs[`${entry.clip.id}|${entry.item.trim.startSec}|${entry.item.trim.endSec}`] ??
+                                          tlThumbs[`${entryClip.id}|${entry.item.trim.startSec}|${entry.item.trim.endSec}`] ??
                                           []
                                         ).map((src, i) => (
                                           <img key={i} src={src} alt="" draggable={false} />
@@ -1992,9 +2134,9 @@ export default function App() {
                                       )}
                                     </div>
                                     <div className="tl-block-label">
-                                      {entry.clip.file.name} · {fmtSec(entry.durationSec)}
+                                      {entryClip.file.name} · {fmtSec(entry.durationSec)}
                                     </div>
-                                    {entry.clip.kind === "video" && (
+                                    {entryClip.kind === "video" && (
                                       <div
                                         className="tl-block-edge left"
                                         data-tl-edge="start"
@@ -2025,24 +2167,87 @@ export default function App() {
                                       ×
                                     </button>
                                   </div>
-                                ))}
+                                  );
+                                })}
                               {trackIndex > 0 &&
                                 trackLayout.items.map((entry) => {
                                   const isSelected = entry.item.id === selectedTlItemId;
+                                  const blockStyle = {
+                                    left: `${tlTotalSec > 0 ? (entry.startSec / tlTotalSec) * 100 : 0}%`,
+                                    width: `${tlTotalSec > 0 ? (entry.durationSec / tlTotalSec) * 100 : 0}%`,
+                                  };
+                                  if (entry.item.kind === "text") {
+                                    const firstLine = (entry.item.text ?? "").split("\n")[0] || "Text";
+                                    return (
+                                      <div
+                                        key={entry.item.id}
+                                        className={`tl-block tl-block-overlay tl-block-text${isSelected ? " selected" : ""}`}
+                                        data-tl-block={entry.item.id}
+                                        data-tl-item={entry.item.id}
+                                        style={blockStyle}
+                                        onPointerDown={(e) => beginTlBlockDrag(e, trackIndex, entry)}
+                                        onClick={() => setSelectedTlItemId(entry.item.id)}
+                                        onDoubleClick={() => {
+                                          setCropClipId(null);
+                                          setDrawerItemId(null);
+                                          setDrawerTextItemId(entry.item.id);
+                                        }}
+                                        onPointerMove={onTlBlockDragMove}
+                                        onPointerUp={endTlBlockDrag}
+                                        onPointerCancel={endTlBlockDrag}
+                                      >
+                                        <div className="tl-thumbs">
+                                          <span className="tl-text-glyph">
+                                            <Type size={20} />
+                                          </span>
+                                        </div>
+                                        <div className="tl-block-label">
+                                          {firstLine} · {fmtSec(entry.durationSec)}
+                                        </div>
+                                        <div
+                                          className="tl-block-edge left"
+                                          data-tl-edge="start"
+                                          onPointerDown={(e) => beginTlEdgeDrag(e, trackIndex, entry, "start")}
+                                          onPointerMove={onTlEdgeDragMove}
+                                          onPointerUp={endTlEdgeDrag}
+                                          onPointerCancel={endTlEdgeDrag}
+                                        />
+                                        <div
+                                          className="tl-block-edge right"
+                                          data-tl-edge="end"
+                                          onPointerDown={(e) => beginTlEdgeDrag(e, trackIndex, entry, "end")}
+                                          onPointerMove={onTlEdgeDragMove}
+                                          onPointerUp={endTlEdgeDrag}
+                                          onPointerCancel={endTlEdgeDrag}
+                                        />
+                                        <button
+                                          type="button"
+                                          className="tl-block-remove"
+                                          aria-label="Remove from timeline"
+                                          onPointerDown={(e) => e.stopPropagation()}
+                                          onClick={(e) => {
+                                            e.stopPropagation();
+                                            removeTlItem(trackIndex, entry.item.id);
+                                          }}
+                                        >
+                                          ×
+                                        </button>
+                                      </div>
+                                    );
+                                  }
+                                  const entryClip = entry.clip;
+                                  if (!entryClip) return null;
                                   return (
                                     <div
                                       key={entry.item.id}
                                       className={`tl-block tl-block-overlay${isSelected ? " selected" : ""}`}
                                       data-tl-block={entry.item.id}
                                       data-tl-item={entry.item.id}
-                                      style={{
-                                        left: `${tlTotalSec > 0 ? (entry.startSec / tlTotalSec) * 100 : 0}%`,
-                                        width: `${tlTotalSec > 0 ? (entry.durationSec / tlTotalSec) * 100 : 0}%`,
-                                      }}
+                                      style={blockStyle}
                                       onPointerDown={(e) => beginTlBlockDrag(e, trackIndex, entry)}
                                       onClick={() => setSelectedTlItemId(entry.item.id)}
                                       onDoubleClick={() => {
-                                        setCropClipId(entry.clip.id);
+                                        setCropClipId(entryClip.id);
                                         setDrawerItemId(entry.item.id);
                                       }}
                                       onPointerMove={onTlBlockDragMove}
@@ -2050,12 +2255,12 @@ export default function App() {
                                       onPointerCancel={endTlBlockDrag}
                                     >
                                       <div className="tl-thumbs">
-                                        {entry.clip.kind === "image" ? (
-                                          <img className="tl-block-img" src={entry.clip.url} alt="" draggable={false} />
+                                        {entryClip.kind === "image" ? (
+                                          <img className="tl-block-img" src={entryClip.url} alt="" draggable={false} />
                                         ) : (
                                           (
                                             tlThumbs[
-                                              `${entry.clip.id}|${entry.item.trim.startSec}|${entry.item.trim.endSec}`
+                                              `${entryClip.id}|${entry.item.trim.startSec}|${entry.item.trim.endSec}`
                                             ] ?? []
                                           ).map((src, i) => (
                                             <img key={i} src={src} alt="" draggable={false} />
@@ -2063,7 +2268,7 @@ export default function App() {
                                         )}
                                       </div>
                                       <div className="tl-block-label">
-                                        {entry.clip.file.name} · {fmtSec(entry.durationSec)}
+                                        {entryClip.file.name} · {fmtSec(entry.durationSec)}
                                       </div>
                                       <div
                                         className="tl-block-edge left"
@@ -2114,8 +2319,8 @@ export default function App() {
                     <Text type="supporting">
                       {fmtSec(tlPlayheadSec)} / {fmtSec(tlTotalSec)} · Click a clip to select it; click a track to
                       seek. Drag base clips to reorder them; drag overlay clips sideways to move them in time. Drag
-                      a clip's edges to trim it (an image clip's right edge sets its duration); double-click a clip
-                      to edit its crop and trim.
+                      a clip's edges to trim it (an image or text clip's right edge sets its duration); double-click
+                      a clip to edit it.
                     </Text>
                   </div>
                 )}
@@ -2145,6 +2350,7 @@ export default function App() {
                           isDisabled={exporting || !clip}
                         />
                         <Button label="Add track" variant="secondary" onClick={addTrack} isDisabled={exporting} />
+                        <Button label="Add text" variant="secondary" onClick={addTextClip} isDisabled={exporting} />
                       </HStack>
                       <Text type="supporting">
                         Total duration: {fmtSec(tlTotalSec)} · {timeline.tracks.length} track
@@ -2228,7 +2434,11 @@ export default function App() {
                             {trackLayout.items.map((entry) => (
                               <div className="tile-row" key={entry.item.id} data-tl-row-item={entry.item.id}>
                                 <div className="tile-row-main">
-                                  <Text type="supporting">{entry.clip.file.name}</Text>
+                                  <Text type="supporting">
+                                    {entry.clip
+                                      ? entry.clip.file.name
+                                      : `${(entry.item.text ?? "").split("\n")[0] || "Text"} (text)`}
+                                  </Text>
                                   <Text type="supporting">
                                     {trackIndex === 0
                                       ? `${fmtSec(entry.startSec)} – ${fmtSec(entry.startSec + entry.durationSec)} · ${fmtSec(entry.durationSec)}`
@@ -2257,7 +2467,52 @@ export default function App() {
                           </div>
                         </div>
                       ))}
-                      {selectedTl && selectedTl.entry.clip.kind === "image" && (
+                      {selectedTl && selectedTl.entry.item.kind === "text" && (
+                        <>
+                          <Text type="supporting">
+                            Selected text clip (V{selectedTl.trackIndex + 1}) · "
+                            {(selectedTl.entry.item.text ?? "").split("\n")[0] || "Text"}"
+                          </Text>
+                          <div className="field-row">
+                            <div className="field">
+                              <label htmlFor="tl-text-duration">Duration (s)</label>
+                              <input
+                                id="tl-text-duration"
+                                type="number"
+                                min={0.1}
+                                step={0.1}
+                                value={Math.round(selectedTl.entry.durationSec * 100) / 100}
+                                disabled={exporting}
+                                onChange={(e) => {
+                                  const value = Number(e.target.value);
+                                  if (Number.isFinite(value)) {
+                                    updateTlItem(selectedTl.trackIndex, selectedTl.entry.item.id, {
+                                      durationSec: Math.max(0.1, Math.round(value * 1000) / 1000),
+                                    });
+                                  }
+                                }}
+                              />
+                            </div>
+                          </div>
+                          <HStack gap={3} vAlign="center">
+                            <Button
+                              label="Edit text"
+                              variant="secondary"
+                              onClick={() => {
+                                setCropClipId(null);
+                                setDrawerItemId(null);
+                                setDrawerTextItemId(selectedTl.entry.item.id);
+                              }}
+                              isDisabled={exporting}
+                            />
+                          </HStack>
+                          <Text type="supporting">
+                            The text is shown while the playhead is inside this clip. Drag the clip to move it in
+                            time, or drag its right edge to change its duration.
+                          </Text>
+                        </>
+                      )}
+                      {selectedTl && selectedTl.entry.clip?.kind === "image" && (
                         <>
                           <Text type="supporting">
                             Selected clip: {selectedTl.entry.clip.file.name} (V{selectedTl.trackIndex + 1}
@@ -2290,7 +2545,7 @@ export default function App() {
                           </Text>
                         </>
                       )}
-                      {selectedTl && selectedTl.entry.clip.kind === "video" && (
+                      {selectedTl && selectedTl.entry.clip?.kind === "video" && (
                         <>
                           <Text type="supporting">
                             Selected clip: {selectedTl.entry.clip.file.name} (V{selectedTl.trackIndex + 1}
@@ -2346,7 +2601,7 @@ export default function App() {
                           </Text>
                         </>
                       )}
-                      {selectedTl && selectedTl.trackIndex > 0 && selectedTl.entry.item.rect && (
+                      {selectedTl && selectedTl.trackIndex > 0 && selectedTl.entry.item.rect && selectedTl.entry.clip && (
                         <>
                           <Text type="supporting">
                             Selected overlay: {selectedTl.entry.clip.file.name} (V{selectedTl.trackIndex + 1})
@@ -2402,8 +2657,10 @@ export default function App() {
                               label="Picture in picture"
                               variant="secondary"
                               onClick={() => {
+                                const selClip = selectedTl.entry.clip;
+                                if (!selClip) return;
                                 updateTlItem(selectedTl.trackIndex, selectedTl.entry.item.id, {
-                                  rect: pipItemRect(timeline.outputWidth, timeline.outputHeight, itemCropAspect(selectedTl.entry.item, selectedTl.entry.clip)),
+                                  rect: pipItemRect(timeline.outputWidth, timeline.outputHeight, itemCropAspect(selectedTl.entry.item, selClip)),
                                 });
                               }}
                               isDisabled={exporting}
@@ -2471,11 +2728,11 @@ export default function App() {
         </main>
       </div>
       <Drawer
-        isOpen={cropClip !== null}
+        isOpen={cropClip !== null || drawerTextItem !== null}
         onOpenChange={(open) => {
           if (!open) closeDrawer();
         }}
-        label={cropClip ? `Edit ${cropClip.file.name}` : "Edit clip"}
+        label={cropClip ? `Edit ${cropClip.file.name}` : drawerTextItem ? "Edit text clip" : "Edit clip"}
         side="end"
         width={520}
         data-testid="crop-drawer"
@@ -2623,6 +2880,89 @@ export default function App() {
             </Text>
               </>
             )}
+          </VStack>
+        )}
+        {drawerTextItem && (
+          <VStack gap={4}>
+            <DrawerHeader
+              title="Text clip"
+              subtitle={`Timeline item (V${drawerTextItem.trackIndex + 1})`}
+              onOpenChange={(open) => {
+                if (!open) closeDrawer();
+              }}
+            />
+            <TextArea
+              label="Text"
+              rows={3}
+              value={drawerTextItem.item.text ?? ""}
+              onChange={(value) => {
+                updateTlItem(drawerTextItem.trackIndex, drawerTextItem.item.id, { text: value });
+              }}
+            />
+            <div className="field-row">
+              <div className="field">
+                <label htmlFor="text-font-size">Font size (% of height)</label>
+                <input
+                  id="text-font-size"
+                  type="number"
+                  min={2}
+                  max={20}
+                  step={0.5}
+                  value={drawerTextStyle.fontSizePct}
+                  onChange={(e) => {
+                    const value = Number(e.target.value);
+                    if (Number.isFinite(value)) {
+                      updateDrawerTextStyle({ fontSizePct: Math.max(2, Math.min(20, value)) });
+                    }
+                  }}
+                />
+              </div>
+              <div className="field">
+                <label htmlFor="text-color">Color</label>
+                <input
+                  id="text-color"
+                  type="color"
+                  value={drawerTextStyle.color}
+                  onChange={(e) => updateDrawerTextStyle({ color: e.target.value })}
+                />
+              </div>
+              <div className="field">
+                <label htmlFor="text-duration">Duration (s)</label>
+                <input
+                  id="text-duration"
+                  type="number"
+                  min={0.1}
+                  step={0.1}
+                  value={Math.round((drawerTextItem.item.durationSec ?? DEFAULT_IMAGE_DURATION_SEC) * 100) / 100}
+                  onChange={(e) => {
+                    const value = Number(e.target.value);
+                    if (Number.isFinite(value)) {
+                      updateTlItem(drawerTextItem.trackIndex, drawerTextItem.item.id, {
+                        durationSec: Math.max(0.1, Math.round(value * 1000) / 1000),
+                      });
+                    }
+                  }}
+                />
+              </div>
+            </div>
+            <Switch
+              label="Outline"
+              value={drawerTextStyle.outline}
+              onChange={(checked) => updateDrawerTextStyle({ outline: checked })}
+            />
+            <SegmentedControl
+              label="Position"
+              value={drawerTextStyle.position}
+              onChange={(value) => updateDrawerTextStyle({ position: value as TextPosition })}
+            >
+              <SegmentedControlItem value="top" label="Top" />
+              <SegmentedControlItem value="center" label="Center" />
+              <SegmentedControlItem value="bottom" label="Bottom" />
+            </SegmentedControl>
+            <Text type="supporting">
+              The text is drawn over the timeline while the playhead is inside this clip. Font size is relative
+              to the output height.
+            </Text>
           </VStack>
         )}
       </Drawer>
