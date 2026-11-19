@@ -94,6 +94,21 @@ body {
   pointer-events: none;
 }
 
+.pool-waveform {
+  display: block;
+  width: 100%;
+  height: 96px;
+  border-radius: 8px;
+  background: #0a1210;
+  pointer-events: none;
+}
+
+.waveform-canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
 .pool-tag {
   border: 1px solid var(--color-border, rgba(255, 255, 255, 0.35));
   border-radius: 999px;
@@ -607,6 +622,34 @@ body {
 
 .tl-block-text {
   background: #453152;
+}
+
+.tl-block-audio {
+  background: #10201b;
+}
+
+.tl-waveform {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+}
+
+.base-gain-row {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  flex-wrap: wrap;
+}
+
+.base-gain-slider {
+  flex: 1 1 220px;
+  min-width: 160px;
+}
+
+.stage audio {
+  width: min(520px, 100%);
 }
 
 .tl-text-glyph {

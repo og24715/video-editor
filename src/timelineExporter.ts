@@ -44,10 +44,20 @@ export interface TimelineTextItemSpec {
   style: TextStyle;
 }
 
+export interface TimelineAudioClipSpec {
+  file: File;
+  buffer: AudioBuffer | null;
+  trim: TrimRange;
+  startSec: number;
+  gain: number;
+}
+
 export interface TimelineExportOptions {
   base: TimelineBaseItemSpec[];
   overlays: TimelineOverlayItemSpec[];
   texts: TimelineTextItemSpec[];
+  audioClips: TimelineAudioClipSpec[];
+  baseAudioGain: number;
   outputWidth: number;
   outputHeight: number;
   onProgress: (ratio: number) => void;
@@ -58,12 +68,15 @@ export interface TimelineExportResult {
   blob: Blob;
   codecLabel: string;
   audioCopied: boolean;
+  audioMixed: boolean;
+  audioCodecLabel: string | null;
   outputDurationSec: number;
 }
 
 interface ResolvedItem {
   kind: MediaKind | "text";
   input: Input | null;
+  file: File | null;
   track: InputVideoTrack | null;
   bitmap: ImageBitmap | null;
   trim: TrimRange;
@@ -108,8 +121,194 @@ function drawTextItem(
   }
 }
 
+const MIX_SAMPLE_RATE = 48000;
+const MIX_BITRATE = 160000;
+
+interface MixPlacement {
+  buffer: AudioBuffer;
+  whenSec: number;
+  offsetSec: number;
+  durationSec: number;
+  gain: number;
+}
+
+async function decodeAudioFile(
+  file: File,
+  cache: Map<File, AudioBuffer | null>,
+): Promise<AudioBuffer | null> {
+  const cached = cache.get(file);
+  if (cached !== undefined) return cached;
+  let decoded: AudioBuffer | null = null;
+  try {
+    const context = new OfflineAudioContext(2, 1, MIX_SAMPLE_RATE);
+    decoded = await context.decodeAudioData(await file.arrayBuffer());
+  } catch {
+    decoded = null;
+  }
+  cache.set(file, decoded);
+  return decoded;
+}
+
+async function buildMixedAudio(
+  baseItems: ResolvedItem[],
+  audioClips: TimelineAudioClipSpec[],
+  baseAudioGain: number,
+  totalDurationSec: number,
+): Promise<AudioBuffer> {
+  const cache = new Map<File, AudioBuffer | null>();
+  const placements: MixPlacement[] = [];
+  for (const item of baseItems) {
+    if (item.kind !== "video" || !item.file) continue;
+    const buffer = await decodeAudioFile(item.file, cache);
+    if (!buffer) continue;
+    const offsetSec = Math.max(0, Math.min(item.trim.startSec, buffer.duration));
+    const durationSec = Math.min(item.durationSec, Math.max(0, buffer.duration - offsetSec));
+    if (durationSec <= 0) continue;
+    placements.push({
+      buffer,
+      whenSec: item.startSec,
+      offsetSec,
+      durationSec,
+      gain: Math.max(0, Math.min(2, baseAudioGain)),
+    });
+  }
+  for (const spec of audioClips) {
+    const buffer = spec.buffer ?? (await decodeAudioFile(spec.file, cache));
+    if (!buffer) continue;
+    const offsetSec = Math.max(0, Math.min(spec.trim.startSec, buffer.duration));
+    const durationSec = Math.min(
+      Math.max(0, spec.trim.endSec - spec.trim.startSec),
+      Math.max(0, buffer.duration - offsetSec),
+    );
+    if (durationSec <= 0) continue;
+    placements.push({
+      buffer,
+      whenSec: Math.max(0, spec.startSec),
+      offsetSec,
+      durationSec,
+      gain: Math.max(0, Math.min(2, spec.gain)),
+    });
+  }
+  const frameCount = Math.max(1, Math.ceil(totalDurationSec * MIX_SAMPLE_RATE));
+  const offline = new OfflineAudioContext(2, frameCount, MIX_SAMPLE_RATE);
+  const compressor = offline.createDynamicsCompressor();
+  compressor.threshold.value = -18;
+  compressor.knee.value = 18;
+  compressor.ratio.value = 4;
+  compressor.attack.value = 0.003;
+  compressor.release.value = 0.25;
+  compressor.connect(offline.destination);
+  for (const placement of placements) {
+    if (placement.whenSec >= totalDurationSec) continue;
+    const source = offline.createBufferSource();
+    source.buffer = placement.buffer;
+    const gainNode = offline.createGain();
+    gainNode.gain.value = placement.gain;
+    source.connect(gainNode);
+    gainNode.connect(compressor);
+    const durationSec = Math.min(placement.durationSec, totalDurationSec - placement.whenSec);
+    if (durationSec > 0) source.start(placement.whenSec, placement.offsetSec, durationSec);
+  }
+  return offline.startRendering();
+}
+
+interface MixedAudioEncoding {
+  config: AudioEncoderConfig;
+  mediabunnyCodec: AudioCodec;
+  label: string;
+}
+
+async function chooseMixedAudioEncoding(): Promise<MixedAudioEncoding> {
+  if (typeof AudioEncoder === "undefined") {
+    throw new Error("This browser cannot encode audio for the mixed export.");
+  }
+  const candidates: MixedAudioEncoding[] = [
+    {
+      config: { codec: "mp4a.40.2", sampleRate: MIX_SAMPLE_RATE, numberOfChannels: 2, bitrate: MIX_BITRATE },
+      mediabunnyCodec: "aac",
+      label: "AAC",
+    },
+    {
+      config: { codec: "opus", sampleRate: MIX_SAMPLE_RATE, numberOfChannels: 2, bitrate: MIX_BITRATE },
+      mediabunnyCodec: "opus",
+      label: "Opus",
+    },
+    {
+      config: { codec: "flac", sampleRate: MIX_SAMPLE_RATE, numberOfChannels: 2 },
+      mediabunnyCodec: "flac",
+      label: "FLAC",
+    },
+  ];
+  for (const candidate of candidates) {
+    const support = await AudioEncoder.isConfigSupported(candidate.config).catch(() => null);
+    if (support && support.supported && support.config) {
+      return { ...candidate, config: support.config };
+    }
+  }
+  throw new Error("This browser does not support AAC, Opus, or FLAC audio encoding for the mixed export.");
+}
+
+async function encodeMixedAudio(
+  buffer: AudioBuffer,
+  audioSource: EncodedAudioPacketSource,
+  encoding: MixedAudioEncoding,
+  shouldStop: () => boolean,
+  noteFailure: (err: unknown) => void,
+): Promise<void> {
+  let muxChain: Promise<void> = Promise.resolve();
+  const encoder = new AudioEncoder({
+    output: (chunk, meta) => {
+      muxChain = muxChain
+        .then(() => audioSource.add(EncodedPacket.fromEncodedChunk(chunk), meta))
+        .catch(noteFailure);
+    },
+    error: (err) => noteFailure(err),
+  });
+  encoder.configure(encoding.config);
+  const chunkFrames = 4096;
+  const left = buffer.getChannelData(0);
+  const right = buffer.numberOfChannels > 1 ? buffer.getChannelData(1) : left;
+  try {
+    for (let frame = 0; frame < buffer.length; frame += chunkFrames) {
+      if (shouldStop()) break;
+      const frames = Math.min(chunkFrames, buffer.length - frame);
+      const data = new ArrayBuffer(frames * 4 * 2);
+      const view = new DataView(data);
+      for (let i = 0; i < frames; i++) {
+        view.setFloat32(i * 4, left[frame + i], true);
+        view.setFloat32((frames + i) * 4, right[frame + i], true);
+      }
+      const audioData = new AudioData({
+        format: "f32-planar",
+        sampleRate: MIX_SAMPLE_RATE,
+        numberOfFrames: frames,
+        numberOfChannels: 2,
+        timestamp: Math.round((frame / MIX_SAMPLE_RATE) * 1_000_000),
+        data,
+      });
+      encoder.encode(audioData);
+      audioData.close();
+      while (encoder.encodeQueueSize > 8 && !shouldStop()) await sleep(5);
+    }
+    if (!shouldStop() && encoder.state === "configured") await encoder.flush();
+  } catch (err) {
+    noteFailure(err);
+  } finally {
+    try {
+      encoder.close();
+    } catch {
+    }
+  }
+  await muxChain;
+}
+
 export async function exportTimeline(options: TimelineExportOptions): Promise<TimelineExportResult> {
-  if (options.base.length === 0 && options.overlays.length === 0 && options.texts.length === 0)
+  if (
+    options.base.length === 0 &&
+    options.overlays.length === 0 &&
+    options.texts.length === 0 &&
+    options.audioClips.length === 0
+  )
     throw new Error("No timeline items to export.");
 
   const outWidth = Math.max(2, Math.round(options.outputWidth) - (Math.round(options.outputWidth) % 2));
@@ -132,6 +331,7 @@ export async function exportTimeline(options: TimelineExportOptions): Promise<Ti
       const resolved: ResolvedItem = {
         kind: "image",
         input: null,
+        file: spec.file,
         track: null,
         bitmap,
         trim: { startSec: 0, endSec: durationSec },
@@ -153,6 +353,7 @@ export async function exportTimeline(options: TimelineExportOptions): Promise<Ti
     const resolved: ResolvedItem = {
       kind: "video",
       input: spec.input,
+      file: spec.file,
       track,
       bitmap: null,
       trim,
@@ -185,6 +386,7 @@ export async function exportTimeline(options: TimelineExportOptions): Promise<Ti
     items.push({
       kind: "text",
       input: null,
+      file: null,
       track: null,
       bitmap: null,
       trim: { startSec: 0, endSec: durationSec },
@@ -197,6 +399,10 @@ export async function exportTimeline(options: TimelineExportOptions): Promise<Ti
       style: spec.style,
     });
     outputDuration = Math.max(outputDuration, startSec + durationSec);
+  }
+  for (const spec of options.audioClips) {
+    const durationSec = Math.max(0, spec.trim.endSec - spec.trim.startSec);
+    outputDuration = Math.max(outputDuration, Math.max(0, spec.startSec) + durationSec);
   }
   if (!(outputDuration > 0)) throw new Error("Nothing to export: all timeline ranges are empty.");
 
@@ -223,18 +429,31 @@ export async function exportTimeline(options: TimelineExportOptions): Promise<Ti
     configs.push(config);
   }
 
+  const mixAudio = options.audioClips.length > 0;
+  const mixedBuffer = mixAudio
+    ? await buildMixedAudio(
+        items.filter((item) => item.isBase),
+        options.audioClips,
+        options.baseAudioGain,
+        outputDuration,
+      )
+    : null;
+  const mixedEncoding = mixAudio ? await chooseMixedAudioEncoding() : null;
+
   interface AudioPlanItem {
     item: ResolvedItem;
     track: NonNullable<Awaited<ReturnType<Input["getPrimaryAudioTrack"]>>>;
   }
   const audioPlan: AudioPlanItem[] = [];
-  let audioCodec: AudioCodec | null = null;
-  for (const item of items) {
-    if (!item.isBase || !item.input) continue;
-    const audioTrack = await item.input.getPrimaryAudioTrack();
-    if (!audioTrack || !audioTrack.codec) continue;
-    if (audioCodec === null) audioCodec = audioTrack.codec;
-    if (audioTrack.codec === audioCodec) audioPlan.push({ item, track: audioTrack });
+  let audioCodec: AudioCodec | null = mixedEncoding ? mixedEncoding.mediabunnyCodec : null;
+  if (!mixAudio) {
+    for (const item of items) {
+      if (!item.isBase || !item.input) continue;
+      const audioTrack = await item.input.getPrimaryAudioTrack();
+      if (!audioTrack || !audioTrack.codec) continue;
+      if (audioCodec === null) audioCodec = audioTrack.codec;
+      if (audioTrack.codec === audioCodec) audioPlan.push({ item, track: audioTrack });
+    }
   }
 
   const target = new BufferTarget();
@@ -255,8 +474,20 @@ export async function exportTimeline(options: TimelineExportOptions): Promise<Ti
   const shouldStop = () => options.isCancelled() || failure !== null;
 
   let audioCopied = false;
+  let audioMixed = false;
   const audioTask = (async () => {
-    if (!audioSource || audioPlan.length === 0) return;
+    if (!audioSource) return;
+    if (mixAudio) {
+      if (!mixedBuffer || !mixedEncoding) return;
+      try {
+        await encodeMixedAudio(mixedBuffer, audioSource, mixedEncoding, shouldStop, noteFailure);
+        if (!shouldStop()) audioMixed = true;
+      } catch (err) {
+        noteFailure(err);
+      }
+      return;
+    }
+    if (audioPlan.length === 0) return;
     try {
       let first = true;
       for (const plan of audioPlan) {
@@ -376,5 +607,12 @@ export async function exportTimeline(options: TimelineExportOptions): Promise<Ti
   const buffer = target.buffer;
   if (!buffer) throw new Error("Export finished without producing data.");
   options.onProgress(1);
-  return { blob: new Blob([buffer], { type: "video/mp4" }), codecLabel: choice.label, audioCopied, outputDurationSec: outputDuration };
+  return {
+    blob: new Blob([buffer], { type: "video/mp4" }),
+    codecLabel: choice.label,
+    audioCopied,
+    audioMixed,
+    audioCodecLabel: mixedEncoding ? mixedEncoding.label : null,
+    outputDurationSec: outputDuration,
+  };
 }

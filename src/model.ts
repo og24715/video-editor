@@ -21,7 +21,7 @@ export interface MediaMeta {
   hasAudio: boolean;
 }
 
-export type MediaKind = "video" | "image";
+export type MediaKind = "video" | "image" | "audio";
 
 export interface Clip {
   id: string;
@@ -32,6 +32,38 @@ export interface Clip {
   meta: MediaMeta;
   crop: CropRect;
   trim: TrimRange;
+  audioBuffer: AudioBuffer | null;
+  waveformPeaks: Float32Array | null;
+}
+
+export const WAVEFORM_PEAKS_PER_SEC = 100;
+
+export function computeWaveformPeaks(buffer: AudioBuffer): Float32Array {
+  const bucketCount = Math.max(1, Math.ceil(buffer.duration * WAVEFORM_PEAKS_PER_SEC));
+  const peaks = new Float32Array(bucketCount * 2);
+  const channelData: Float32Array[] = [];
+  for (let channel = 0; channel < buffer.numberOfChannels; channel++) {
+    channelData.push(buffer.getChannelData(channel));
+  }
+  for (let bucket = 0; bucket < bucketCount; bucket++) {
+    const start = Math.floor((bucket / WAVEFORM_PEAKS_PER_SEC) * buffer.sampleRate);
+    const end = Math.min(
+      buffer.length,
+      Math.max(start + 1, Math.floor(((bucket + 1) / WAVEFORM_PEAKS_PER_SEC) * buffer.sampleRate)),
+    );
+    let min = 0;
+    let max = 0;
+    for (const data of channelData) {
+      for (let i = start; i < end; i++) {
+        const value = data[i];
+        if (value < min) min = value;
+        if (value > max) max = value;
+      }
+    }
+    peaks[bucket * 2] = min;
+    peaks[bucket * 2 + 1] = max;
+  }
+  return peaks;
 }
 
 export const DEFAULT_IMAGE_DURATION_SEC = 5;
@@ -87,6 +119,7 @@ export interface TimelineItem {
   trim: TrimRange;
   crop: CropRect;
   durationSec: number | null;
+  gain?: number;
   text?: string;
   textStyle?: TextStyle;
 }
@@ -98,8 +131,11 @@ export function timelineItemDurationSec(item: TimelineItem, clip: Clip | null): 
   return Math.max(0, item.trim.endSec - item.trim.startSec);
 }
 
+export type TrackKind = "video" | "audio";
+
 export interface TimelineTrack {
   id: string;
+  kind: TrackKind;
   items: TimelineItem[];
 }
 
@@ -107,6 +143,8 @@ export interface TimelineState {
   outputWidth: number;
   outputHeight: number;
   tracks: TimelineTrack[];
+  audioTracks: TimelineTrack[];
+  baseAudioGain: number;
 }
 
 function evenDown(value: number, min = 2): number {
