@@ -2532,607 +2532,6 @@ export default function App() {
                     <Text type="supporting">Exporting… {Math.round(progress * 100)}%</Text>
                   </div>
                 )}
-                <div className="panel">
-                  <div className="meta-row">
-                    <Text type="supporting">File: {clip.file.name}</Text>
-                    {clip.kind !== "audio" && (
-                      <Text type="supporting">
-                        Source: {clip.meta.width} × {clip.meta.height}
-                      </Text>
-                    )}
-                    {clip.kind === "audio" ? (
-                      <>
-                        <Text type="supporting">Type: Audio</Text>
-                        <Text type="supporting">Duration: {fmtDuration(clip.meta.durationSec)}</Text>
-                        <Text type="supporting">Audio codec: {clip.meta.audioCodec ?? "unknown"}</Text>
-                      </>
-                    ) : clip.kind === "image" ? (
-                      <Text type="supporting">Type: Image</Text>
-                    ) : (
-                      <>
-                        <Text type="supporting">Duration: {fmtDuration(clip.meta.durationSec)}</Text>
-                        <Text type="supporting">Video codec: {clip.meta.videoCodec ?? "unknown"}</Text>
-                        <Text type="supporting">Audio: {clip.meta.hasAudio ? (clip.meta.audioCodec ?? "yes") : "none"}</Text>
-                      </>
-                    )}
-                  </div>
-                  {timeline && (
-                    <>
-                      <HStack gap={3} vAlign="center">
-                        {clip?.kind === "audio" ? (
-                          <Button
-                            label="Add to audio track"
-                            variant="primary"
-                            onClick={() => {
-                              if (!clip) return;
-                              if (timeline.audioTracks.length > 0) {
-                                addAudioClipToTrack(clip.id, 0, tlGlobalRef.current);
-                              } else {
-                                addAudioClipToNewTrack(clip.id, tlGlobalRef.current);
-                              }
-                            }}
-                            isDisabled={exporting || !clip}
-                          />
-                        ) : (
-                          <Button
-                            label="Add to timeline"
-                            variant="primary"
-                            onClick={() => clip && addClipToBase(clip.id)}
-                            isDisabled={exporting || !clip}
-                          />
-                        )}
-                        <Button label="Add track" variant="secondary" onClick={addTrack} isDisabled={exporting} />
-                        <Button label="Add audio track" variant="secondary" onClick={addAudioTrack} isDisabled={exporting} />
-                        <Button label="Add text" variant="secondary" onClick={addTextClip} isDisabled={exporting} />
-                      </HStack>
-                      <Text type="supporting">
-                        Total duration: {fmtSec(tlTotalSec)} · {timeline.tracks.length + timeline.audioTracks.length} track
-                        {timeline.tracks.length + timeline.audioTracks.length === 1 ? "" : "s"} · Export MP4 exports the whole
-                        timeline. Base-track audio is used as-is when there are no audio clips; when audio clips
-                        are present, the base audio and audio clips are mixed. Overlay video clips are silent.
-                      </Text>
-                      {(tlLayout.tracks[0]?.items.some((entry) => entry.clip?.meta.hasAudio) ||
-                        tlAudioLayout.tracks.some((track) => track.items.length > 0)) && (
-                        <div className="base-gain-row">
-                          <Text type="supporting">Base audio gain</Text>
-                          <div className="base-gain-slider">
-                            <Slider
-                              data-testid="base-audio-gain"
-                              label="Base audio gain"
-                              isLabelHidden
-                              valueDisplay="none"
-                              min={0}
-                              max={2}
-                              step={0.05}
-                              value={timeline.baseAudioGain}
-                              isDisabled={exporting}
-                              onChange={(value: number) =>
-                                setTimeline((prev) => (prev ? { ...prev, baseAudioGain: value } : prev))
-                              }
-                            />
-                          </div>
-                          <Text type="supporting">{timeline.baseAudioGain.toFixed(2)}×</Text>
-                        </div>
-                      )}
-                      <div className="field-row">
-                        <div className="field">
-                          <label htmlFor="timeline-output-width">Output width</label>
-                          <input
-                            id="timeline-output-width"
-                            type="number"
-                            min={16}
-                            max={7680}
-                            step={2}
-                            value={tlOutWText}
-                            disabled={exporting}
-                            onChange={(e) => setTlOutWText(e.target.value)}
-                            onBlur={(e) => commitTlOutputSize(e)}
-                            onKeyDown={(e) => {
-                              if (e.key === "Enter") (e.target as HTMLInputElement).blur();
-                            }}
-                          />
-                        </div>
-                        <div className="field">
-                          <label htmlFor="timeline-output-height">Output height</label>
-                          <input
-                            id="timeline-output-height"
-                            type="number"
-                            min={16}
-                            max={7680}
-                            step={2}
-                            value={tlOutHText}
-                            disabled={exporting}
-                            onChange={(e) => setTlOutHText(e.target.value)}
-                            onBlur={(e) => commitTlOutputSize(e)}
-                            onKeyDown={(e) => {
-                              if (e.key === "Enter") (e.target as HTMLInputElement).blur();
-                            }}
-                          />
-                        </div>
-                      </div>
-                      <HStack gap={3} vAlign="center">
-                        <Button label="1920 × 1080" variant="secondary" onClick={() => applyTlOutputSize(1920, 1080)} isDisabled={exporting} />
-                        <Button label="1280 × 720" variant="secondary" onClick={() => applyTlOutputSize(1280, 720)} isDisabled={exporting} />
-                        <Button label="854 × 480" variant="secondary" onClick={() => applyTlOutputSize(854, 480)} isDisabled={exporting} />
-                        <Button
-                          label="50%"
-                          variant="secondary"
-                          onClick={() => applyTlOutputSize(timeline.outputWidth / 2, timeline.outputHeight / 2)}
-                          isDisabled={exporting || timeline.outputWidth <= 0}
-                        />
-                        <Button
-                          label="25%"
-                          variant="secondary"
-                          onClick={() => applyTlOutputSize(timeline.outputWidth / 4, timeline.outputHeight / 4)}
-                          isDisabled={exporting || timeline.outputWidth <= 0}
-                        />
-                      </HStack>
-                      {isLargeTlCanvas && (
-                        <Text type="supporting">
-                          <span className="canvas-warning">Large canvas: encoding will be heavy and the file big.</span>
-                        </Text>
-                      )}
-                      {tlLayout.tracks.map((trackLayout, trackIndex) => (
-                        <div key={trackLayout.track.id} className="tl-track-group">
-                          <HStack gap={3} vAlign="center">
-                            <Text type="supporting">
-                              {trackIndex === 0 ? "V1 · Base track" : `V${trackIndex + 1} · Overlay track`}
-                            </Text>
-                            {trackIndex > 0 && (
-                              <Button
-                                label="Remove track"
-                                variant="secondary"
-                                onClick={() => removeTrack(trackIndex)}
-                                isDisabled={exporting}
-                              />
-                            )}
-                          </HStack>
-                          <div className="tile-list">
-                            {trackLayout.items.map((entry) => (
-                              <div className="tile-row" key={entry.item.id} data-tl-row-item={entry.item.id}>
-                                <div className="tile-row-main">
-                                  <Text type="supporting">
-                                    {entry.clip
-                                      ? entry.clip.file.name
-                                      : `${(entry.item.text ?? "").split("\n")[0] || "Text"} (text)`}
-                                  </Text>
-                                  <Text type="supporting">
-                                    {trackIndex === 0
-                                      ? `${fmtSec(entry.startSec)} – ${fmtSec(entry.startSec + entry.durationSec)} · ${fmtSec(entry.durationSec)}`
-                                      : `Start ${fmtSec(entry.startSec)} · ${fmtSec(entry.durationSec)}`}
-                                  </Text>
-                                </div>
-                                <HStack gap={2} vAlign="center">
-                                  <Button
-                                    label="Select"
-                                    variant={entry.item.id === selectedTlItemId ? "primary" : "secondary"}
-                                    onClick={() => setSelectedTlItemId(entry.item.id)}
-                                    isDisabled={exporting}
-                                  />
-                                  <Button
-                                    label="Remove"
-                                    variant="secondary"
-                                    onClick={() => removeTlItem(trackIndex, entry.item.id)}
-                                    isDisabled={exporting}
-                                  />
-                                </HStack>
-                              </div>
-                            ))}
-                            {trackLayout.items.length === 0 && (
-                              <Text type="supporting">No clips on this track yet.</Text>
-                            )}
-                          </div>
-                        </div>
-                      ))}
-                      {tlAudioLayout.tracks.map((trackLayout, trackIndex) => (
-                        <div key={trackLayout.track.id} className="tl-track-group">
-                          <HStack gap={3} vAlign="center">
-                            <Text type="supporting">A{trackIndex + 1} · Audio track</Text>
-                            <Button
-                              label="Remove track"
-                              variant="secondary"
-                              onClick={() => removeAudioTrack(trackIndex)}
-                              isDisabled={exporting}
-                            />
-                          </HStack>
-                          <div className="tile-list">
-                            {trackLayout.items.map((entry) => (
-                              <div className="tile-row" key={entry.item.id} data-audio-row-item={entry.item.id}>
-                                <div className="tile-row-main">
-                                  <Text type="supporting">{entry.clip ? entry.clip.file.name : "Audio"}</Text>
-                                  <Text type="supporting">
-                                    Start {fmtSec(entry.startSec)} · {fmtSec(entry.durationSec)} · Gain {(entry.item.gain ?? 1).toFixed(2)}×
-                                  </Text>
-                                </div>
-                                <HStack gap={2} vAlign="center">
-                                  <Button
-                                    label="Select"
-                                    variant={entry.item.id === selectedTlItemId ? "primary" : "secondary"}
-                                    onClick={() => setSelectedTlItemId(entry.item.id)}
-                                    isDisabled={exporting}
-                                  />
-                                  <Button
-                                    label="Remove"
-                                    variant="secondary"
-                                    onClick={() => removeAudioItem(trackIndex, entry.item.id)}
-                                    isDisabled={exporting}
-                                  />
-                                </HStack>
-                              </div>
-                            ))}
-                            {trackLayout.items.length === 0 && (
-                              <Text type="supporting">No audio clips on this track yet.</Text>
-                            )}
-                          </div>
-                        </div>
-                      ))}
-                      {selectedAudio && selectedAudio.entry.clip && (
-                        <>
-                          <Text type="supporting">
-                            Selected audio clip: {selectedAudio.entry.clip.file.name} (A{selectedAudio.trackIndex + 1}) · Waveform trims with the clip
-                          </Text>
-                          <div className="field-row">
-                            <div className="field">
-                              <label htmlFor="audio-item-start">Start (s)</label>
-                              <input
-                                id="audio-item-start"
-                                type="number"
-                                min={0}
-                                step={0.1}
-                                value={Math.round(selectedAudio.entry.startSec * 100) / 100}
-                                disabled={exporting}
-                                onChange={(e) => {
-                                  const value = Number(e.target.value);
-                                  if (Number.isFinite(value)) {
-                                    updateAudioItem(selectedAudio.trackIndex, selectedAudio.entry.item.id, {
-                                      startSec: Math.max(0, Math.round(value * 1000) / 1000),
-                                    });
-                                  }
-                                }}
-                              />
-                            </div>
-                            <div className="field">
-                              <label htmlFor="audio-item-trim-start">Trim in (s)</label>
-                              <input
-                                id="audio-item-trim-start"
-                                type="number"
-                                min={0}
-                                max={selectedAudio.entry.clip.meta.durationSec}
-                                step={0.1}
-                                value={Math.round(selectedAudio.entry.item.trim.startSec * 100) / 100}
-                                disabled={exporting}
-                                onChange={(e) => {
-                                  const value = Number(e.target.value);
-                                  if (Number.isFinite(value)) {
-                                    applyAudioItemTrim(selectedAudio.trackIndex, selectedAudio.entry, {
-                                      ...selectedAudio.entry.item.trim,
-                                      startSec: value,
-                                    });
-                                  }
-                                }}
-                              />
-                            </div>
-                            <div className="field">
-                              <label htmlFor="audio-item-trim-end">Trim out (s)</label>
-                              <input
-                                id="audio-item-trim-end"
-                                type="number"
-                                min={0}
-                                max={selectedAudio.entry.clip.meta.durationSec}
-                                step={0.1}
-                                value={Math.round(selectedAudio.entry.item.trim.endSec * 100) / 100}
-                                disabled={exporting}
-                                onChange={(e) => {
-                                  const value = Number(e.target.value);
-                                  if (Number.isFinite(value)) {
-                                    applyAudioItemTrim(selectedAudio.trackIndex, selectedAudio.entry, {
-                                      ...selectedAudio.entry.item.trim,
-                                      endSec: value,
-                                    });
-                                  }
-                                }}
-                              />
-                            </div>
-                            <div className="field">
-                              <label htmlFor="audio-item-gain">Gain (0–2)</label>
-                              <input
-                                id="audio-item-gain"
-                                type="number"
-                                min={0}
-                                max={2}
-                                step={0.05}
-                                value={Math.round((selectedAudio.entry.item.gain ?? 1) * 100) / 100}
-                                disabled={exporting}
-                                onChange={(e) => {
-                                  const value = Number(e.target.value);
-                                  if (Number.isFinite(value)) {
-                                    updateAudioItem(selectedAudio.trackIndex, selectedAudio.entry.item.id, {
-                                      gain: Math.max(0, Math.min(2, value)),
-                                    });
-                                  }
-                                }}
-                              />
-                            </div>
-                          </div>
-                          <div className="base-gain-row">
-                            <Text type="supporting">Clip gain</Text>
-                            <div className="base-gain-slider">
-                              <Slider
-                                data-testid="audio-clip-gain"
-                                label="Audio clip gain"
-                                isLabelHidden
-                                valueDisplay="none"
-                                min={0}
-                                max={2}
-                                step={0.05}
-                                value={selectedAudio.entry.item.gain ?? 1}
-                                isDisabled={exporting}
-                                onChange={(value: number) =>
-                                  updateAudioItem(selectedAudio.trackIndex, selectedAudio.entry.item.id, { gain: value })
-                                }
-                              />
-                            </div>
-                            <Text type="supporting">{(selectedAudio.entry.item.gain ?? 1).toFixed(2)}×</Text>
-                          </div>
-                          <Text type="supporting">
-                            Drag the clip to move it, drag its edges to trim it, or drag it up or down to move it
-                            to another audio track. Preview volume is capped at 1×; export uses the full gain.
-                          </Text>
-                        </>
-                      )}
-                      {selectedTl && selectedTl.entry.item.kind === "text" && (
-                        <>
-                          <Text type="supporting">
-                            Selected text clip (V{selectedTl.trackIndex + 1}) · "
-                            {(selectedTl.entry.item.text ?? "").split("\n")[0] || "Text"}"
-                          </Text>
-                          <div className="field-row">
-                            <div className="field">
-                              <label htmlFor="tl-text-duration">Duration (s)</label>
-                              <input
-                                id="tl-text-duration"
-                                type="number"
-                                min={0.1}
-                                step={0.1}
-                                value={Math.round(selectedTl.entry.durationSec * 100) / 100}
-                                disabled={exporting}
-                                onChange={(e) => {
-                                  const value = Number(e.target.value);
-                                  if (Number.isFinite(value)) {
-                                    updateTlItem(selectedTl.trackIndex, selectedTl.entry.item.id, {
-                                      durationSec: Math.max(0.1, Math.round(value * 1000) / 1000),
-                                    });
-                                  }
-                                }}
-                              />
-                            </div>
-                          </div>
-                          <HStack gap={3} vAlign="center">
-                            <Button
-                              label="Edit text"
-                              variant="secondary"
-                              onClick={() => {
-                                setCropClipId(null);
-                                setDrawerItemId(null);
-                                setDrawerTextItemId(selectedTl.entry.item.id);
-                              }}
-                              isDisabled={exporting}
-                            />
-                          </HStack>
-                          <Text type="supporting">
-                            The text is shown while the playhead is inside this clip. Drag the clip to move it in
-                            time, or drag its right edge to change its duration.
-                          </Text>
-                        </>
-                      )}
-                      {selectedTl && selectedTl.entry.clip?.kind === "image" && (
-                        <>
-                          <Text type="supporting">
-                            Selected clip: {selectedTl.entry.clip.file.name} (V{selectedTl.trackIndex + 1}
-                            {selectedTl.trackIndex === 0 ? " · Base" : ""}) · image
-                          </Text>
-                          <div className="field-row">
-                            <div className="field">
-                              <label htmlFor="tl-item-duration">Duration (s)</label>
-                              <input
-                                id="tl-item-duration"
-                                type="number"
-                                min={0.1}
-                                step={0.1}
-                                value={Math.round(selectedTl.entry.durationSec * 100) / 100}
-                                disabled={exporting}
-                                onChange={(e) => {
-                                  const value = Number(e.target.value);
-                                  if (Number.isFinite(value)) {
-                                    updateTlItem(selectedTl.trackIndex, selectedTl.entry.item.id, {
-                                      durationSec: Math.max(0.1, Math.round(value * 1000) / 1000),
-                                    });
-                                  }
-                                }}
-                              />
-                            </div>
-                          </div>
-                          <Text type="supporting">
-                            The image is shown for this long. Drag the clip's right edge on the timeline to change
-                            it, or double-click the clip to edit its crop.
-                          </Text>
-                        </>
-                      )}
-                      {selectedTl && selectedTl.entry.clip?.kind === "video" && (
-                        <>
-                          <Text type="supporting">
-                            Selected clip: {selectedTl.entry.clip.file.name} (V{selectedTl.trackIndex + 1}
-                            {selectedTl.trackIndex === 0 ? " · Base" : ""}) · item trim (source)
-                          </Text>
-                          <div className="field-row">
-                            <div className="field">
-                              <label htmlFor="tl-item-trim-start">Start (s)</label>
-                              <input
-                                id="tl-item-trim-start"
-                                type="number"
-                                min={0}
-                                max={selectedTl.entry.clip.meta.durationSec}
-                                step={0.1}
-                                value={Math.round(selectedTl.entry.item.trim.startSec * 100) / 100}
-                                disabled={exporting}
-                                onChange={(e) => {
-                                  const value = Number(e.target.value);
-                                  if (Number.isFinite(value)) {
-                                    applyItemTrim(selectedTl.trackIndex, selectedTl.entry, {
-                                      ...selectedTl.entry.item.trim,
-                                      startSec: value,
-                                    });
-                                  }
-                                }}
-                              />
-                            </div>
-                            <div className="field">
-                              <label htmlFor="tl-item-trim-end">End (s)</label>
-                              <input
-                                id="tl-item-trim-end"
-                                type="number"
-                                min={0}
-                                max={selectedTl.entry.clip.meta.durationSec}
-                                step={0.1}
-                                value={Math.round(selectedTl.entry.item.trim.endSec * 100) / 100}
-                                disabled={exporting}
-                                onChange={(e) => {
-                                  const value = Number(e.target.value);
-                                  if (Number.isFinite(value)) {
-                                    applyItemTrim(selectedTl.trackIndex, selectedTl.entry, {
-                                      ...selectedTl.entry.item.trim,
-                                      endSec: value,
-                                    });
-                                  }
-                                }}
-                              />
-                            </div>
-                          </div>
-                          <Text type="supporting">
-                            Item duration: {fmtSec(selectedTl.entry.durationSec)} · Trimming an overlay's head
-                            shifts it so the remaining content stays in place.
-                          </Text>
-                        </>
-                      )}
-                      {selectedTl && selectedTl.trackIndex > 0 && selectedTl.entry.item.rect && selectedTl.entry.clip && (
-                        <>
-                          <Text type="supporting">
-                            Selected overlay: {selectedTl.entry.clip.file.name} (V{selectedTl.trackIndex + 1})
-                          </Text>
-                          <div className="field-row">
-                            <div className="field">
-                              <label htmlFor="tl-item-start">Start (s)</label>
-                              <input
-                                id="tl-item-start"
-                                type="number"
-                                min={0}
-                                step={0.1}
-                                value={Math.round(selectedTl.entry.item.startSec * 10) / 10}
-                                disabled={exporting}
-                                onChange={(e) => {
-                                  const value = Number(e.target.value);
-                                  if (Number.isFinite(value)) {
-                                    updateTlItem(selectedTl.trackIndex, selectedTl.entry.item.id, {
-                                      startSec: Math.max(0, value),
-                                    });
-                                  }
-                                }}
-                              />
-                            </div>
-                            {(["x", "y", "width", "height"] as const).map((field) => (
-                              <div className="field" key={field}>
-                                <label htmlFor={`tl-rect-${field}`}>
-                                  {field === "width" ? "Width" : field === "height" ? "Height" : field.toUpperCase()}
-                                </label>
-                                <input
-                                  id={`tl-rect-${field}`}
-                                  type="number"
-                                  min={0}
-                                  value={Math.round(selectedTl.entry.item.rect?.[field] ?? 0)}
-                                  disabled={exporting}
-                                  onChange={(e) => {
-                                    const value = Number(e.target.value);
-                                    const rect = selectedTl.entry.item.rect;
-                                    if (!Number.isFinite(value) || !rect) return;
-                                    const nextRect = { ...rect, [field]: value };
-                                    nextRect.width = Math.max(16, nextRect.width);
-                                    nextRect.height = Math.max(16, nextRect.height);
-                                    nextRect.x = Math.max(0, Math.min(nextRect.x, Math.max(0, timeline.outputWidth - 16)));
-                                    nextRect.y = Math.max(0, Math.min(nextRect.y, Math.max(0, timeline.outputHeight - 16)));
-                                    updateTlItem(selectedTl.trackIndex, selectedTl.entry.item.id, { rect: nextRect });
-                                  }}
-                                />
-                              </div>
-                            ))}
-                          </div>
-                          <HStack gap={3} vAlign="center">
-                            <Button
-                              label="Picture in picture"
-                              variant="secondary"
-                              onClick={() => {
-                                const selClip = selectedTl.entry.clip;
-                                if (!selClip) return;
-                                updateTlItem(selectedTl.trackIndex, selectedTl.entry.item.id, {
-                                  rect: pipItemRect(timeline.outputWidth, timeline.outputHeight, itemCropAspect(selectedTl.entry.item, selClip)),
-                                });
-                              }}
-                              isDisabled={exporting}
-                            />
-                          </HStack>
-                          <Text type="supporting">
-                            Drag the selected overlay on the preview to move it, and use the corner handle to resize
-                            it. Its size follows the item's crop aspect while dragging on the preview.
-                          </Text>
-                        </>
-                      )}
-                    </>
-                  )}
-                  {!tlHasItems && clip.kind === "image" && (
-                    <Text type="supporting">
-                      This is an image. Images are used on the timeline: add it to the timeline, where each image
-                      clip has its own crop and duration, then export the timeline as MP4.
-                    </Text>
-                  )}
-                  {!tlHasItems && clip.kind === "video" && (
-                    <>
-                      <Text type="supporting">
-                        {isFullFrame
-                          ? "Crop: full frame. Double-click the video in Media to edit its crop and trim."
-                          : `Crop: ${Math.round(clip.crop.x)}, ${Math.round(clip.crop.y)} · ${outRect.width} × ${outRect.height}. Double-click the video in Media to edit its crop and trim.`}
-                      </Text>
-                      <Text type="supporting">
-                        {trimIsFull
-                          ? "Trim: full length."
-                          : `Trim: ${fmtSec(clip.trim.startSec)} – ${fmtSec(clip.trim.endSec)} (${fmtSec(selectionSec)}). Timeline items keep their own trim.`}
-                      </Text>
-                      <Text type="supporting">
-                        {`Output: ${outRect.width} × ${outRect.height} (adjusted to even numbers)`}
-                      </Text>
-                    </>
-                  )}
-                  {resultUrl && !exporting && (
-                    <VStack gap={2}>
-                      {resultFormat === "gif" ? (
-                        <Text type="supporting">
-                          Done. {usedCodec ?? "GIF"}
-                          {" · "}
-                          {fmtSize(resultSize)}
-                        </Text>
-                      ) : (
-                        <Text type="supporting">
-                          Done. Codec: {usedCodec ?? "unknown"}
-                          {` · ${resultAudioText} · `}
-                          {fmtSize(resultSize)}
-                        </Text>
-                      )}
-                      <HStack gap={3}>
-                        <a href={resultUrl} download={resultName}>
-                          <Button label={`Download ${resultName}`} variant="secondary" />
-                        </a>
-                      </HStack>
-                    </VStack>
-                  )}
-                </div>
               </div>
             )}
               <div
@@ -3651,6 +3050,609 @@ export default function App() {
                 </Text>
                 )}
               </div>
+            {clip && outRect && (
+              <div className="panel">
+                <div className="meta-row">
+                  <Text type="supporting">File: {clip.file.name}</Text>
+                  {clip.kind !== "audio" && (
+                    <Text type="supporting">
+                      Source: {clip.meta.width} × {clip.meta.height}
+                    </Text>
+                  )}
+                  {clip.kind === "audio" ? (
+                    <>
+                      <Text type="supporting">Type: Audio</Text>
+                      <Text type="supporting">Duration: {fmtDuration(clip.meta.durationSec)}</Text>
+                      <Text type="supporting">Audio codec: {clip.meta.audioCodec ?? "unknown"}</Text>
+                    </>
+                  ) : clip.kind === "image" ? (
+                    <Text type="supporting">Type: Image</Text>
+                  ) : (
+                    <>
+                      <Text type="supporting">Duration: {fmtDuration(clip.meta.durationSec)}</Text>
+                      <Text type="supporting">Video codec: {clip.meta.videoCodec ?? "unknown"}</Text>
+                      <Text type="supporting">Audio: {clip.meta.hasAudio ? (clip.meta.audioCodec ?? "yes") : "none"}</Text>
+                    </>
+                  )}
+                </div>
+                {timeline && (
+                  <>
+                    <HStack gap={3} vAlign="center">
+                      {clip?.kind === "audio" ? (
+                        <Button
+                          label="Add to audio track"
+                          variant="primary"
+                          onClick={() => {
+                            if (!clip) return;
+                            if (timeline.audioTracks.length > 0) {
+                              addAudioClipToTrack(clip.id, 0, tlGlobalRef.current);
+                            } else {
+                              addAudioClipToNewTrack(clip.id, tlGlobalRef.current);
+                            }
+                          }}
+                          isDisabled={exporting || !clip}
+                        />
+                      ) : (
+                        <Button
+                          label="Add to timeline"
+                          variant="primary"
+                          onClick={() => clip && addClipToBase(clip.id)}
+                          isDisabled={exporting || !clip}
+                        />
+                      )}
+                      <Button label="Add track" variant="secondary" onClick={addTrack} isDisabled={exporting} />
+                      <Button label="Add audio track" variant="secondary" onClick={addAudioTrack} isDisabled={exporting} />
+                      <Button label="Add text" variant="secondary" onClick={addTextClip} isDisabled={exporting} />
+                    </HStack>
+                    <Text type="supporting">
+                      Total duration: {fmtSec(tlTotalSec)} · {timeline.tracks.length + timeline.audioTracks.length} track
+                      {timeline.tracks.length + timeline.audioTracks.length === 1 ? "" : "s"} · Export MP4 exports the whole
+                      timeline. Base-track audio is used as-is when there are no audio clips; when audio clips
+                      are present, the base audio and audio clips are mixed. Overlay video clips are silent.
+                    </Text>
+                    {(tlLayout.tracks[0]?.items.some((entry) => entry.clip?.meta.hasAudio) ||
+                      tlAudioLayout.tracks.some((track) => track.items.length > 0)) && (
+                      <div className="base-gain-row">
+                        <Text type="supporting">Base audio gain</Text>
+                        <div className="base-gain-slider">
+                          <Slider
+                            data-testid="base-audio-gain"
+                            label="Base audio gain"
+                            isLabelHidden
+                            valueDisplay="none"
+                            min={0}
+                            max={2}
+                            step={0.05}
+                            value={timeline.baseAudioGain}
+                            isDisabled={exporting}
+                            onChange={(value: number) =>
+                              setTimeline((prev) => (prev ? { ...prev, baseAudioGain: value } : prev))
+                            }
+                          />
+                        </div>
+                        <Text type="supporting">{timeline.baseAudioGain.toFixed(2)}×</Text>
+                      </div>
+                    )}
+                    <div className="field-row">
+                      <div className="field">
+                        <label htmlFor="timeline-output-width">Output width</label>
+                        <input
+                          id="timeline-output-width"
+                          type="number"
+                          min={16}
+                          max={7680}
+                          step={2}
+                          value={tlOutWText}
+                          disabled={exporting}
+                          onChange={(e) => setTlOutWText(e.target.value)}
+                          onBlur={(e) => commitTlOutputSize(e)}
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter") (e.target as HTMLInputElement).blur();
+                          }}
+                        />
+                      </div>
+                      <div className="field">
+                        <label htmlFor="timeline-output-height">Output height</label>
+                        <input
+                          id="timeline-output-height"
+                          type="number"
+                          min={16}
+                          max={7680}
+                          step={2}
+                          value={tlOutHText}
+                          disabled={exporting}
+                          onChange={(e) => setTlOutHText(e.target.value)}
+                          onBlur={(e) => commitTlOutputSize(e)}
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter") (e.target as HTMLInputElement).blur();
+                          }}
+                        />
+                      </div>
+                    </div>
+                    <HStack gap={3} vAlign="center">
+                      <Button label="1920 × 1080" variant="secondary" onClick={() => applyTlOutputSize(1920, 1080)} isDisabled={exporting} />
+                      <Button label="1280 × 720" variant="secondary" onClick={() => applyTlOutputSize(1280, 720)} isDisabled={exporting} />
+                      <Button label="854 × 480" variant="secondary" onClick={() => applyTlOutputSize(854, 480)} isDisabled={exporting} />
+                      <Button
+                        label="50%"
+                        variant="secondary"
+                        onClick={() => applyTlOutputSize(timeline.outputWidth / 2, timeline.outputHeight / 2)}
+                        isDisabled={exporting || timeline.outputWidth <= 0}
+                      />
+                      <Button
+                        label="25%"
+                        variant="secondary"
+                        onClick={() => applyTlOutputSize(timeline.outputWidth / 4, timeline.outputHeight / 4)}
+                        isDisabled={exporting || timeline.outputWidth <= 0}
+                      />
+                    </HStack>
+                    {isLargeTlCanvas && (
+                      <Text type="supporting">
+                        <span className="canvas-warning">Large canvas: encoding will be heavy and the file big.</span>
+                      </Text>
+                    )}
+                    {tlLayout.tracks.map((trackLayout, trackIndex) => (
+                      <div key={trackLayout.track.id} className="tl-track-group">
+                        <HStack gap={3} vAlign="center">
+                          <Text type="supporting">
+                            {trackIndex === 0 ? "V1 · Base track" : `V${trackIndex + 1} · Overlay track`}
+                          </Text>
+                          {trackIndex > 0 && (
+                            <Button
+                              label="Remove track"
+                              variant="secondary"
+                              onClick={() => removeTrack(trackIndex)}
+                              isDisabled={exporting}
+                            />
+                          )}
+                        </HStack>
+                        <div className="tile-list">
+                          {trackLayout.items.map((entry) => (
+                            <div className="tile-row" key={entry.item.id} data-tl-row-item={entry.item.id}>
+                              <div className="tile-row-main">
+                                <Text type="supporting">
+                                  {entry.clip
+                                    ? entry.clip.file.name
+                                    : `${(entry.item.text ?? "").split("\n")[0] || "Text"} (text)`}
+                                </Text>
+                                <Text type="supporting">
+                                  {trackIndex === 0
+                                    ? `${fmtSec(entry.startSec)} – ${fmtSec(entry.startSec + entry.durationSec)} · ${fmtSec(entry.durationSec)}`
+                                    : `Start ${fmtSec(entry.startSec)} · ${fmtSec(entry.durationSec)}`}
+                                </Text>
+                              </div>
+                              <HStack gap={2} vAlign="center">
+                                <Button
+                                  label="Select"
+                                  variant={entry.item.id === selectedTlItemId ? "primary" : "secondary"}
+                                  onClick={() => setSelectedTlItemId(entry.item.id)}
+                                  isDisabled={exporting}
+                                />
+                                <Button
+                                  label="Remove"
+                                  variant="secondary"
+                                  onClick={() => removeTlItem(trackIndex, entry.item.id)}
+                                  isDisabled={exporting}
+                                />
+                              </HStack>
+                            </div>
+                          ))}
+                          {trackLayout.items.length === 0 && (
+                            <Text type="supporting">No clips on this track yet.</Text>
+                          )}
+                        </div>
+                      </div>
+                    ))}
+                    {tlAudioLayout.tracks.map((trackLayout, trackIndex) => (
+                      <div key={trackLayout.track.id} className="tl-track-group">
+                        <HStack gap={3} vAlign="center">
+                          <Text type="supporting">A{trackIndex + 1} · Audio track</Text>
+                          <Button
+                            label="Remove track"
+                            variant="secondary"
+                            onClick={() => removeAudioTrack(trackIndex)}
+                            isDisabled={exporting}
+                          />
+                        </HStack>
+                        <div className="tile-list">
+                          {trackLayout.items.map((entry) => (
+                            <div className="tile-row" key={entry.item.id} data-audio-row-item={entry.item.id}>
+                              <div className="tile-row-main">
+                                <Text type="supporting">{entry.clip ? entry.clip.file.name : "Audio"}</Text>
+                                <Text type="supporting">
+                                  Start {fmtSec(entry.startSec)} · {fmtSec(entry.durationSec)} · Gain {(entry.item.gain ?? 1).toFixed(2)}×
+                                </Text>
+                              </div>
+                              <HStack gap={2} vAlign="center">
+                                <Button
+                                  label="Select"
+                                  variant={entry.item.id === selectedTlItemId ? "primary" : "secondary"}
+                                  onClick={() => setSelectedTlItemId(entry.item.id)}
+                                  isDisabled={exporting}
+                                />
+                                <Button
+                                  label="Remove"
+                                  variant="secondary"
+                                  onClick={() => removeAudioItem(trackIndex, entry.item.id)}
+                                  isDisabled={exporting}
+                                />
+                              </HStack>
+                            </div>
+                          ))}
+                          {trackLayout.items.length === 0 && (
+                            <Text type="supporting">No audio clips on this track yet.</Text>
+                          )}
+                        </div>
+                      </div>
+                    ))}
+                    {selectedAudio && selectedAudio.entry.clip && (
+                      <>
+                        <Text type="supporting">
+                          Selected audio clip: {selectedAudio.entry.clip.file.name} (A{selectedAudio.trackIndex + 1}) · Waveform trims with the clip
+                        </Text>
+                        <div className="field-row">
+                          <div className="field">
+                            <label htmlFor="audio-item-start">Start (s)</label>
+                            <input
+                              id="audio-item-start"
+                              type="number"
+                              min={0}
+                              step={0.1}
+                              value={Math.round(selectedAudio.entry.startSec * 100) / 100}
+                              disabled={exporting}
+                              onChange={(e) => {
+                                const value = Number(e.target.value);
+                                if (Number.isFinite(value)) {
+                                  updateAudioItem(selectedAudio.trackIndex, selectedAudio.entry.item.id, {
+                                    startSec: Math.max(0, Math.round(value * 1000) / 1000),
+                                  });
+                                }
+                              }}
+                            />
+                          </div>
+                          <div className="field">
+                            <label htmlFor="audio-item-trim-start">Trim in (s)</label>
+                            <input
+                              id="audio-item-trim-start"
+                              type="number"
+                              min={0}
+                              max={selectedAudio.entry.clip.meta.durationSec}
+                              step={0.1}
+                              value={Math.round(selectedAudio.entry.item.trim.startSec * 100) / 100}
+                              disabled={exporting}
+                              onChange={(e) => {
+                                const value = Number(e.target.value);
+                                if (Number.isFinite(value)) {
+                                  applyAudioItemTrim(selectedAudio.trackIndex, selectedAudio.entry, {
+                                    ...selectedAudio.entry.item.trim,
+                                    startSec: value,
+                                  });
+                                }
+                              }}
+                            />
+                          </div>
+                          <div className="field">
+                            <label htmlFor="audio-item-trim-end">Trim out (s)</label>
+                            <input
+                              id="audio-item-trim-end"
+                              type="number"
+                              min={0}
+                              max={selectedAudio.entry.clip.meta.durationSec}
+                              step={0.1}
+                              value={Math.round(selectedAudio.entry.item.trim.endSec * 100) / 100}
+                              disabled={exporting}
+                              onChange={(e) => {
+                                const value = Number(e.target.value);
+                                if (Number.isFinite(value)) {
+                                  applyAudioItemTrim(selectedAudio.trackIndex, selectedAudio.entry, {
+                                    ...selectedAudio.entry.item.trim,
+                                    endSec: value,
+                                  });
+                                }
+                              }}
+                            />
+                          </div>
+                          <div className="field">
+                            <label htmlFor="audio-item-gain">Gain (0–2)</label>
+                            <input
+                              id="audio-item-gain"
+                              type="number"
+                              min={0}
+                              max={2}
+                              step={0.05}
+                              value={Math.round((selectedAudio.entry.item.gain ?? 1) * 100) / 100}
+                              disabled={exporting}
+                              onChange={(e) => {
+                                const value = Number(e.target.value);
+                                if (Number.isFinite(value)) {
+                                  updateAudioItem(selectedAudio.trackIndex, selectedAudio.entry.item.id, {
+                                    gain: Math.max(0, Math.min(2, value)),
+                                  });
+                                }
+                              }}
+                            />
+                          </div>
+                        </div>
+                        <div className="base-gain-row">
+                          <Text type="supporting">Clip gain</Text>
+                          <div className="base-gain-slider">
+                            <Slider
+                              data-testid="audio-clip-gain"
+                              label="Audio clip gain"
+                              isLabelHidden
+                              valueDisplay="none"
+                              min={0}
+                              max={2}
+                              step={0.05}
+                              value={selectedAudio.entry.item.gain ?? 1}
+                              isDisabled={exporting}
+                              onChange={(value: number) =>
+                                updateAudioItem(selectedAudio.trackIndex, selectedAudio.entry.item.id, { gain: value })
+                              }
+                            />
+                          </div>
+                          <Text type="supporting">{(selectedAudio.entry.item.gain ?? 1).toFixed(2)}×</Text>
+                        </div>
+                        <Text type="supporting">
+                          Drag the clip to move it, drag its edges to trim it, or drag it up or down to move it
+                          to another audio track. Preview volume is capped at 1×; export uses the full gain.
+                        </Text>
+                      </>
+                    )}
+                    {selectedTl && selectedTl.entry.item.kind === "text" && (
+                      <>
+                        <Text type="supporting">
+                          Selected text clip (V{selectedTl.trackIndex + 1}) · "
+                          {(selectedTl.entry.item.text ?? "").split("\n")[0] || "Text"}"
+                        </Text>
+                        <div className="field-row">
+                          <div className="field">
+                            <label htmlFor="tl-text-duration">Duration (s)</label>
+                            <input
+                              id="tl-text-duration"
+                              type="number"
+                              min={0.1}
+                              step={0.1}
+                              value={Math.round(selectedTl.entry.durationSec * 100) / 100}
+                              disabled={exporting}
+                              onChange={(e) => {
+                                const value = Number(e.target.value);
+                                if (Number.isFinite(value)) {
+                                  updateTlItem(selectedTl.trackIndex, selectedTl.entry.item.id, {
+                                    durationSec: Math.max(0.1, Math.round(value * 1000) / 1000),
+                                  });
+                                }
+                              }}
+                            />
+                          </div>
+                        </div>
+                        <HStack gap={3} vAlign="center">
+                          <Button
+                            label="Edit text"
+                            variant="secondary"
+                            onClick={() => {
+                              setCropClipId(null);
+                              setDrawerItemId(null);
+                              setDrawerTextItemId(selectedTl.entry.item.id);
+                            }}
+                            isDisabled={exporting}
+                          />
+                        </HStack>
+                        <Text type="supporting">
+                          The text is shown while the playhead is inside this clip. Drag the clip to move it in
+                          time, or drag its right edge to change its duration.
+                        </Text>
+                      </>
+                    )}
+                    {selectedTl && selectedTl.entry.clip?.kind === "image" && (
+                      <>
+                        <Text type="supporting">
+                          Selected clip: {selectedTl.entry.clip.file.name} (V{selectedTl.trackIndex + 1}
+                          {selectedTl.trackIndex === 0 ? " · Base" : ""}) · image
+                        </Text>
+                        <div className="field-row">
+                          <div className="field">
+                            <label htmlFor="tl-item-duration">Duration (s)</label>
+                            <input
+                              id="tl-item-duration"
+                              type="number"
+                              min={0.1}
+                              step={0.1}
+                              value={Math.round(selectedTl.entry.durationSec * 100) / 100}
+                              disabled={exporting}
+                              onChange={(e) => {
+                                const value = Number(e.target.value);
+                                if (Number.isFinite(value)) {
+                                  updateTlItem(selectedTl.trackIndex, selectedTl.entry.item.id, {
+                                    durationSec: Math.max(0.1, Math.round(value * 1000) / 1000),
+                                  });
+                                }
+                              }}
+                            />
+                          </div>
+                        </div>
+                        <Text type="supporting">
+                          The image is shown for this long. Drag the clip's right edge on the timeline to change
+                          it, or double-click the clip to edit its crop.
+                        </Text>
+                      </>
+                    )}
+                    {selectedTl && selectedTl.entry.clip?.kind === "video" && (
+                      <>
+                        <Text type="supporting">
+                          Selected clip: {selectedTl.entry.clip.file.name} (V{selectedTl.trackIndex + 1}
+                          {selectedTl.trackIndex === 0 ? " · Base" : ""}) · item trim (source)
+                        </Text>
+                        <div className="field-row">
+                          <div className="field">
+                            <label htmlFor="tl-item-trim-start">Start (s)</label>
+                            <input
+                              id="tl-item-trim-start"
+                              type="number"
+                              min={0}
+                              max={selectedTl.entry.clip.meta.durationSec}
+                              step={0.1}
+                              value={Math.round(selectedTl.entry.item.trim.startSec * 100) / 100}
+                              disabled={exporting}
+                              onChange={(e) => {
+                                const value = Number(e.target.value);
+                                if (Number.isFinite(value)) {
+                                  applyItemTrim(selectedTl.trackIndex, selectedTl.entry, {
+                                    ...selectedTl.entry.item.trim,
+                                    startSec: value,
+                                  });
+                                }
+                              }}
+                            />
+                          </div>
+                          <div className="field">
+                            <label htmlFor="tl-item-trim-end">End (s)</label>
+                            <input
+                              id="tl-item-trim-end"
+                              type="number"
+                              min={0}
+                              max={selectedTl.entry.clip.meta.durationSec}
+                              step={0.1}
+                              value={Math.round(selectedTl.entry.item.trim.endSec * 100) / 100}
+                              disabled={exporting}
+                              onChange={(e) => {
+                                const value = Number(e.target.value);
+                                if (Number.isFinite(value)) {
+                                  applyItemTrim(selectedTl.trackIndex, selectedTl.entry, {
+                                    ...selectedTl.entry.item.trim,
+                                    endSec: value,
+                                  });
+                                }
+                              }}
+                            />
+                          </div>
+                        </div>
+                        <Text type="supporting">
+                          Item duration: {fmtSec(selectedTl.entry.durationSec)} · Trimming an overlay's head
+                          shifts it so the remaining content stays in place.
+                        </Text>
+                      </>
+                    )}
+                    {selectedTl && selectedTl.trackIndex > 0 && selectedTl.entry.item.rect && selectedTl.entry.clip && (
+                      <>
+                        <Text type="supporting">
+                          Selected overlay: {selectedTl.entry.clip.file.name} (V{selectedTl.trackIndex + 1})
+                        </Text>
+                        <div className="field-row">
+                          <div className="field">
+                            <label htmlFor="tl-item-start">Start (s)</label>
+                            <input
+                              id="tl-item-start"
+                              type="number"
+                              min={0}
+                              step={0.1}
+                              value={Math.round(selectedTl.entry.item.startSec * 10) / 10}
+                              disabled={exporting}
+                              onChange={(e) => {
+                                const value = Number(e.target.value);
+                                if (Number.isFinite(value)) {
+                                  updateTlItem(selectedTl.trackIndex, selectedTl.entry.item.id, {
+                                    startSec: Math.max(0, value),
+                                  });
+                                }
+                              }}
+                            />
+                          </div>
+                          {(["x", "y", "width", "height"] as const).map((field) => (
+                            <div className="field" key={field}>
+                              <label htmlFor={`tl-rect-${field}`}>
+                                {field === "width" ? "Width" : field === "height" ? "Height" : field.toUpperCase()}
+                              </label>
+                              <input
+                                id={`tl-rect-${field}`}
+                                type="number"
+                                min={0}
+                                value={Math.round(selectedTl.entry.item.rect?.[field] ?? 0)}
+                                disabled={exporting}
+                                onChange={(e) => {
+                                  const value = Number(e.target.value);
+                                  const rect = selectedTl.entry.item.rect;
+                                  if (!Number.isFinite(value) || !rect) return;
+                                  const nextRect = { ...rect, [field]: value };
+                                  nextRect.width = Math.max(16, nextRect.width);
+                                  nextRect.height = Math.max(16, nextRect.height);
+                                  nextRect.x = Math.max(0, Math.min(nextRect.x, Math.max(0, timeline.outputWidth - 16)));
+                                  nextRect.y = Math.max(0, Math.min(nextRect.y, Math.max(0, timeline.outputHeight - 16)));
+                                  updateTlItem(selectedTl.trackIndex, selectedTl.entry.item.id, { rect: nextRect });
+                                }}
+                              />
+                            </div>
+                          ))}
+                        </div>
+                        <HStack gap={3} vAlign="center">
+                          <Button
+                            label="Picture in picture"
+                            variant="secondary"
+                            onClick={() => {
+                              const selClip = selectedTl.entry.clip;
+                              if (!selClip) return;
+                              updateTlItem(selectedTl.trackIndex, selectedTl.entry.item.id, {
+                                rect: pipItemRect(timeline.outputWidth, timeline.outputHeight, itemCropAspect(selectedTl.entry.item, selClip)),
+                              });
+                            }}
+                            isDisabled={exporting}
+                          />
+                        </HStack>
+                        <Text type="supporting">
+                          Drag the selected overlay on the preview to move it, and use the corner handle to resize
+                          it. Its size follows the item's crop aspect while dragging on the preview.
+                        </Text>
+                      </>
+                    )}
+                  </>
+                )}
+                {!tlHasItems && clip.kind === "image" && (
+                  <Text type="supporting">
+                    This is an image. Images are used on the timeline: add it to the timeline, where each image
+                    clip has its own crop and duration, then export the timeline as MP4.
+                  </Text>
+                )}
+                {!tlHasItems && clip.kind === "video" && (
+                  <>
+                    <Text type="supporting">
+                      {isFullFrame
+                        ? "Crop: full frame. Double-click the video in Media to edit its crop and trim."
+                        : `Crop: ${Math.round(clip.crop.x)}, ${Math.round(clip.crop.y)} · ${outRect.width} × ${outRect.height}. Double-click the video in Media to edit its crop and trim.`}
+                    </Text>
+                    <Text type="supporting">
+                      {trimIsFull
+                        ? "Trim: full length."
+                        : `Trim: ${fmtSec(clip.trim.startSec)} – ${fmtSec(clip.trim.endSec)} (${fmtSec(selectionSec)}). Timeline items keep their own trim.`}
+                    </Text>
+                    <Text type="supporting">
+                      {`Output: ${outRect.width} × ${outRect.height} (adjusted to even numbers)`}
+                    </Text>
+                  </>
+                )}
+                {resultUrl && !exporting && (
+                  <VStack gap={2}>
+                    {resultFormat === "gif" ? (
+                      <Text type="supporting">
+                        Done. {usedCodec ?? "GIF"}
+                        {" · "}
+                        {fmtSize(resultSize)}
+                      </Text>
+                    ) : (
+                      <Text type="supporting">
+                        Done. Codec: {usedCodec ?? "unknown"}
+                        {` · ${resultAudioText} · `}
+                        {fmtSize(resultSize)}
+                      </Text>
+                    )}
+                    <HStack gap={3}>
+                      <a href={resultUrl} download={resultName}>
+                        <Button label={`Download ${resultName}`} variant="secondary" />
+                      </a>
+                    </HStack>
+                  </VStack>
+                )}
+              </div>
+            )}
           </VStack>
             </div>
           </div>
