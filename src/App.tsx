@@ -516,6 +516,7 @@ export default function App() {
   const dragRef = useRef<DragState | null>(null);
   const cancelRef = useRef(false);
   const tlStateRef = useRef<TimelineState | null>(null);
+  const placeClipOnBaseRef = useRef<(target: Clip, index?: number) => void>(() => undefined);
   const tlPlayingRef = useRef(false);
   const tlGlobalRef = useRef(0);
   const tlVideoRefs = useRef<Map<string, HTMLVideoElement>>(new Map());
@@ -724,6 +725,10 @@ export default function App() {
           setActiveClipId((prev) => prev ?? created[0].id);
           if (clipsRef.current.length === 0) {
             setAspect("free");
+          }
+          const firstVisual = created.find((c) => c.kind === "video" || c.kind === "image");
+          if (firstVisual && (tlStateRef.current?.tracks[0]?.items.length ?? 0) === 0) {
+            placeClipOnBaseRef.current(firstVisual);
           }
         }
         if (failures.length > 0) setError(failures.join(" "));
@@ -1205,14 +1210,13 @@ export default function App() {
     setTimeline({ ...current, tracks: current.tracks.filter((_, i) => i !== trackIndex) });
   }, []);
 
-  const addClipToBase = useCallback((clipId: string, index?: number) => {
-    const target = clipsRef.current.find((c) => c.id === clipId);
-    if (!target || target.kind === "audio") return;
+  const placeClipOnBase = useCallback((target: Clip, index?: number) => {
+    if (target.kind === "audio") return;
     const itemCrop: CropRect = { x: 0, y: 0, width: target.meta.width, height: target.meta.height };
     const sized = evenRect(itemCrop, target.meta.width, target.meta.height);
     const item: TimelineItem = {
       id: nextTlId("tlitem"),
-      clipId,
+      clipId: target.id,
       kind: "media",
       startSec: 0,
       rect: null,
@@ -1237,6 +1241,19 @@ export default function App() {
       return { ...withSize, tracks };
     });
   }, []);
+
+  useEffect(() => {
+    placeClipOnBaseRef.current = placeClipOnBase;
+  }, [placeClipOnBase]);
+
+  const addClipToBase = useCallback(
+    (clipId: string, index?: number) => {
+      const target = clipsRef.current.find((c) => c.id === clipId);
+      if (!target) return;
+      placeClipOnBase(target, index);
+    },
+    [placeClipOnBase],
+  );
 
   const addClipToOverlay = useCallback(
     (clipId: string, trackIndex: number, startSec: number) => {
