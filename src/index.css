@@ -468,27 +468,9 @@ body {
   color: var(--color-error, #f87171);
 }
 
-.trim-timeline {
-  -webkit-user-select: none;
-  user-select: none;
-  background: var(--color-background-surface);
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-container, 16px);
-  padding: 12px;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
 
-.tl-track {
-  position: relative;
-  height: 52px;
-  border-radius: 8px;
-  overflow: hidden;
-  background: var(--color-background-card);
-  cursor: pointer;
-  touch-action: none;
-}
+
+
 
 .tl-thumbs {
   position: absolute;
@@ -505,22 +487,9 @@ body {
   pointer-events: none;
 }
 
-.tl-dim {
-  position: absolute;
-  top: 0;
-  bottom: 0;
-  background: rgba(0, 0, 0, 0.55);
-  pointer-events: none;
-}
 
-.tl-selection {
-  position: absolute;
-  top: 0;
-  bottom: 0;
-  border: 2px solid var(--color-accent, #e94560);
-  box-sizing: border-box;
-  pointer-events: none;
-}
+
+
 
 .tl-playhead {
   position: absolute;
@@ -533,20 +502,7 @@ body {
   pointer-events: none;
 }
 
-.tl-handle {
-  position: absolute;
-  top: 0;
-  bottom: 0;
-  width: 12px;
-  margin-left: -6px;
-  background: var(--color-accent, #e94560);
-  border: 2px solid #fff;
-  border-radius: 6px;
-  box-sizing: border-box;
-  cursor: ew-resize;
-  touch-action: none;
-  z-index: 2;
-}
+
 
 .tl-strip {
   -webkit-user-select: none;
@@ -599,6 +555,28 @@ body {
   outline-offset: -1px;
   cursor: grab;
   box-sizing: border-box;
+}
+
+.tl-block-edge {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 8px;
+  cursor: ew-resize;
+  touch-action: none;
+  z-index: 3;
+}
+
+.tl-block-edge.left {
+  left: 0;
+}
+
+.tl-block-edge.right {
+  right: 0;
+}
+
+.tl-block-edge:hover {
+  background: rgba(233, 69, 96, 0.45);
 }
 
 .tl-block-overlay {

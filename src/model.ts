@@ -33,7 +33,7 @@ export interface Clip {
 
 export type AspectPreset = "free" | "16:9" | "9:16" | "1:1" | "4:3";
 
-export type ToolId = "trim" | "layout" | "timeline";
+export type ToolId = "layout" | "timeline";
 
 export type ActiveTool = "none" | ToolId;
 
@@ -73,6 +73,7 @@ export interface TimelineItem {
   clipId: string;
   startSec: number;
   rect: TileRect | null;
+  trim: TrimRange;
 }
 
 export interface TimelineTrack {

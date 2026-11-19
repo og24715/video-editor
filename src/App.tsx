@@ -187,10 +187,6 @@ function SeekBar(props: {
   );
 }
 
-function clampTimeToTrim(t: number, trim: TrimRange): number {
-  return Math.max(trim.startSec, Math.min(trim.endSec, t));
-}
-
 function subRectVideoStyle(clip: Clip): React.CSSProperties {
   const { meta } = clip;
   const crop = evenRect(clip.crop, meta.width, meta.height);
@@ -269,7 +265,7 @@ function layoutTimeline(
     for (const item of track.items) {
       const itemClip = clips.find((c) => c.id === item.clipId);
       if (!itemClip) continue;
-      const durationSec = Math.max(0, itemClip.trim.endSec - itemClip.trim.startSec);
+      const durationSec = Math.max(0, item.trim.endSec - item.trim.startSec);
       const startSec = trackIndex === 0 ? cursor : Math.max(0, item.startSec);
       cursor += durationSec;
       const endSec = startSec + durationSec;
@@ -355,11 +351,11 @@ export default function App() {
   const [gifFps, setGifFps] = useState("15");
   const [resultFormat, setResultFormat] = useState<ExportFormat>("mp4");
   const [audioCopied, setAudioCopied] = useState<boolean | null>(null);
-  const [playheadSec, setPlayheadSec] = useState(0);
   const [layout, setLayout] = useState<LayoutState | null>(null);
   const [layoutPlaying, setLayoutPlaying] = useState(false);
   const [layoutPlayheadSec, setLayoutPlayheadSec] = useState(0);
   const [cropClipId, setCropClipId] = useState<string | null>(null);
+  const [drawerItemId, setDrawerItemId] = useState<string | null>(null);
   const [outWText, setOutWText] = useState("");
   const [outHText, setOutHText] = useState("");
   const [timeline, setTimeline] = useState<TimelineState | null>(null);
@@ -372,10 +368,6 @@ export default function App() {
   const [tlPlayheadSec, setTlPlayheadSec] = useState(0);
   const [tlThumbs, setTlThumbs] = useState<Record<string, string[]>>({});
   const [resultTimeline, setResultTimeline] = useState(false);
-  const [thumbs, setThumbs] = useState<string[]>([]);
-  const thumbsClipRef = useRef<string | null>(null);
-  const timelineRef = useRef<HTMLDivElement | null>(null);
-  const tlDragRef = useRef<"start" | "end" | null>(null);
   const poolFileInputRef = useRef<HTMLInputElement | null>(null);
   const tileVideoRefs = useRef<Map<string, HTMLVideoElement>>(new Map());
   const layoutStageRef = useRef<HTMLDivElement | null>(null);
@@ -383,6 +375,7 @@ export default function App() {
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const stageRef = useRef<HTMLDivElement | null>(null);
   const drawerStageRef = useRef<HTMLDivElement | null>(null);
+  const drawerVideoRef = useRef<HTMLVideoElement | null>(null);
   const stageWrapRef = useRef<HTMLDivElement | null>(null);
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const dragRef = useRef<DragState | null>(null);
@@ -408,6 +401,17 @@ export default function App() {
     rowWidth: number;
     totalSec: number;
   } | null>(null);
+  const tlEdgeDragRef = useRef<{
+    itemId: string;
+    trackIndex: number;
+    edge: "start" | "end";
+    startClientX: number;
+    rowWidth: number;
+    totalSec: number;
+    origTrim: TrimRange;
+    origStartSec: number;
+    clipDurationSec: number;
+  } | null>(null);
   const tlClockRef = useRef<number | null>(null);
   const tlThumbsPendingRef = useRef<Set<string>>(new Set());
   const supported = webCodecsSupported();
@@ -415,24 +419,14 @@ export default function App() {
   const clip = clips.find((c) => c.id === activeClipId) ?? clips[0] ?? null;
   const cropClip = clips.find((c) => c.id === cropClipId) ?? null;
   const ratio = ASPECTS.find((a) => a.value === aspect)?.ratio ?? null;
-  const trimActive = activeTool === "trim";
   const layoutActive = activeTool === "layout";
   const timelineActive = activeTool === "timeline";
   const compositing = layout !== null && layout.tiles.length >= 2;
-  const trimRef = useRef<TrimRange>({ startSec: 0, endSec: 0 });
-  const durationRef = useRef(0);
-  const toolRef = useRef<ActiveTool>("none");
-  const seekClampRef = useRef(false);
   const layoutRef = useRef<LayoutState | null>(null);
   const clipsRef = useRef<Clip[]>([]);
-  toolRef.current = activeTool;
   layoutRef.current = layout;
   clipsRef.current = clips;
   tlStateRef.current = timeline;
-  if (clip) {
-    trimRef.current = clip.trim;
-    durationRef.current = clip.meta.durationSec;
-  }
 
   useEffect(() => {
     if (layout) {
@@ -452,22 +446,8 @@ export default function App() {
     setClips((prev) => prev.map((c) => (c.id === cropClipId ? { ...c, crop } : c)));
   }, [cropClipId]);
 
-  const setTrim = useCallback((trim: TrimRange) => {
-    setClips((prev) => {
-      const targetId = prev.find((c) => c.id === activeClipId)?.id ?? prev[0]?.id;
-      return prev.map((c) => (c.id === targetId ? { ...c, trim } : c));
-    });
-  }, [activeClipId]);
-
-  const clampPlayheadToTrim = useCallback(() => {
-    const video = videoRef.current;
-    if (!video) return;
-    const clamped = clampTimeToTrim(video.currentTime, trimRef.current);
-    if (Math.abs(clamped - video.currentTime) > 0.001) {
-      seekClampRef.current = true;
-      video.currentTime = clamped;
-      setPlayheadSec(clamped);
-    }
+  const setClipTrim = useCallback((clipId: string, trim: TrimRange) => {
+    setClips((prev) => prev.map((c) => (c.id === clipId ? { ...c, trim } : c)));
   }, []);
 
   const createClip = useCallback(async (file: File): Promise<Clip> => {
@@ -503,7 +483,6 @@ export default function App() {
         setActiveClipId((prev) => prev ?? created[0].id);
         if (clipsRef.current.length === 0) {
           setActiveTool("none");
-          setPlayheadSec(0);
           setAspect("free");
         }
       } catch (err) {
@@ -577,12 +556,12 @@ export default function App() {
           const local = globalSec - entry.startSec;
           if (local < 0 || local > entry.durationSec) {
             if (!el.paused) el.pause();
-            if (local < 0 && Math.abs(el.currentTime - entry.clip.trim.startSec) > 0.05) {
-              el.currentTime = entry.clip.trim.startSec;
+            if (local < 0 && Math.abs(el.currentTime - entry.item.trim.startSec) > 0.05) {
+              el.currentTime = entry.item.trim.startSec;
             }
             continue;
           }
-          const target = entry.clip.trim.startSec + local;
+          const target = entry.item.trim.startSec + local;
           if (playing) {
             if (el.paused) {
               void el.play().catch(() => undefined);
@@ -645,7 +624,7 @@ export default function App() {
       const baseEntry = data.tracks[0]?.items.find((e) => global >= e.startSec && global < e.startSec + e.durationSec);
       if (baseEntry) {
         const el = tlVideoRefs.current.get(baseEntry.item.id);
-        if (el) el.currentTime = baseEntry.clip.trim.startSec + (global - baseEntry.startSec);
+        if (el) el.currentTime = baseEntry.item.trim.startSec + (global - baseEntry.startSec);
       }
       syncTlVideos(global, tlPlayingRef.current);
     },
@@ -657,73 +636,6 @@ export default function App() {
       cancelRef.current = true;
     };
   }, []);
-
-  useEffect(() => {
-    const video = videoRef.current;
-    if (!video) return;
-    const enforceTrimRange = () => {
-      if (toolRef.current !== "trim") return;
-      const clamped = clampTimeToTrim(video.currentTime, trimRef.current);
-      if (Math.abs(clamped - video.currentTime) > 0.001) {
-        seekClampRef.current = true;
-        video.currentTime = clamped;
-        setPlayheadSec(clamped);
-      }
-    };
-    const onTimeUpdate = () => {
-      setPlayheadSec(video.currentTime);
-      const trim = trimRef.current;
-      const duration = durationRef.current;
-      if (toolRef.current === "trim") {
-        if (video.currentTime < trim.startSec - 0.001) {
-          enforceTrimRange();
-          return;
-        }
-        if (video.currentTime >= trim.endSec) {
-          video.pause();
-          if (video.currentTime > trim.endSec) {
-            seekClampRef.current = true;
-            video.currentTime = trim.endSec;
-            setPlayheadSec(trim.endSec);
-          }
-          return;
-        }
-      }
-      if (duration > 0 && trim.endSec < duration - 0.01 && video.currentTime >= trim.endSec) {
-        video.pause();
-      }
-    };
-    const onSeeking = () => {
-      if (seekClampRef.current) {
-        seekClampRef.current = false;
-        return;
-      }
-      enforceTrimRange();
-    };
-    const onSeeked = () => {
-      enforceTrimRange();
-      setPlayheadSec(video.currentTime);
-    };
-    const onPlay = () => {
-      if (toolRef.current !== "trim") return;
-      const trim = trimRef.current;
-      if (video.currentTime < trim.startSec - 0.001 || video.currentTime >= trim.endSec - 0.001) {
-        seekClampRef.current = true;
-        video.currentTime = trim.startSec;
-        setPlayheadSec(trim.startSec);
-      }
-    };
-    video.addEventListener("timeupdate", onTimeUpdate);
-    video.addEventListener("seeking", onSeeking);
-    video.addEventListener("seeked", onSeeked);
-    video.addEventListener("play", onPlay);
-    return () => {
-      video.removeEventListener("timeupdate", onTimeUpdate);
-      video.removeEventListener("seeking", onSeeking);
-      video.removeEventListener("seeked", onSeeked);
-      video.removeEventListener("play", onPlay);
-    };
-  }, [clip?.id, layoutActive]);
 
   useEffect(() => {
     if (!layoutActive) return;
@@ -794,27 +706,27 @@ export default function App() {
 
   useEffect(() => {
     if (!timelineActive || !timeline) return;
-    const needed = new Map<string, Clip>();
+    const needed = new Map<string, { itemClip: Clip; trim: TrimRange }>();
     for (const track of timeline.tracks) {
       for (const item of track.items) {
         const itemClip = clips.find((c) => c.id === item.clipId);
         if (!itemClip) continue;
-        const key = `${itemClip.id}|${itemClip.trim.startSec}|${itemClip.trim.endSec}`;
-        if (!tlThumbs[key] && !tlThumbsPendingRef.current.has(key)) needed.set(key, itemClip);
+        const key = `${itemClip.id}|${item.trim.startSec}|${item.trim.endSec}`;
+        if (!tlThumbs[key] && !tlThumbsPendingRef.current.has(key)) needed.set(key, { itemClip, trim: item.trim });
       }
     }
     if (needed.size === 0) return;
     let cancelled = false;
     void (async () => {
-      for (const [key, itemClip] of needed) {
+      for (const [key, { itemClip, trim }] of needed) {
         if (cancelled) return;
         tlThumbsPendingRef.current.add(key);
         const urls = await captureThumbs(
           itemClip.url,
           itemClip.meta.width,
           itemClip.meta.height,
-          itemClip.trim.startSec,
-          Math.max(itemClip.trim.startSec + 0.05, itemClip.trim.endSec - 0.02),
+          trim.startSec,
+          Math.max(trim.startSec + 0.05, trim.endSec - 0.02),
           6,
         );
         tlThumbsPendingRef.current.delete(key);
@@ -827,69 +739,6 @@ export default function App() {
       cancelled = true;
     };
   }, [timelineActive, timeline, clips, tlThumbs]);
-
-  useEffect(() => {
-    if (trimActive) clampPlayheadToTrim();
-  }, [trimActive, clip?.trim, clampPlayheadToTrim]);
-
-  useEffect(() => {
-    if (!trimActive || !clip) return;
-    if (!(clip.meta.durationSec > 0)) return;
-    if (thumbsClipRef.current === clip.id) return;
-    thumbsClipRef.current = clip.id;
-    let cancelled = false;
-    let completed = false;
-    const duration = clip.meta.durationSec;
-    const count = 10;
-    const video = document.createElement("video");
-    video.muted = true;
-    video.playsInline = true;
-    video.preload = "auto";
-    video.src = clip.url;
-    const canvas = document.createElement("canvas");
-    const thumbHeight = 48;
-    const thumbWidth = Math.max(24, Math.round((thumbHeight * clip.meta.width) / clip.meta.height));
-    canvas.width = thumbWidth;
-    canvas.height = thumbHeight;
-    const ctx = canvas.getContext("2d");
-    if (!ctx) return;
-    const seekTo = (t: number) =>
-      new Promise<void>((resolve) => {
-        const done = () => {
-          video.removeEventListener("seeked", done);
-          resolve();
-        };
-        video.addEventListener("seeked", done);
-        video.currentTime = t;
-      });
-    void (async () => {
-      try {
-        await new Promise<void>((resolve, reject) => {
-          video.addEventListener("loadeddata", () => resolve(), { once: true });
-          video.addEventListener("error", () => reject(new Error("thumbnail load failed")), { once: true });
-        });
-        const urls: string[] = [];
-        for (let i = 0; i < count; i++) {
-          if (cancelled) return;
-          const t = Math.max(0, Math.min(duration - 0.05, ((i + 0.5) / count) * duration));
-          await seekTo(t);
-          if (cancelled) return;
-          ctx.drawImage(video, 0, 0, thumbWidth, thumbHeight);
-          urls.push(canvas.toDataURL("image/jpeg", 0.7));
-          setThumbs([...urls]);
-        }
-        completed = true;
-      } catch {
-        if (!cancelled) setThumbs([]);
-      }
-    })();
-    return () => {
-      cancelled = true;
-      if (!completed) thumbsClipRef.current = null;
-      video.removeAttribute("src");
-      video.load();
-    };
-  }, [trimActive, clip?.id]);
 
   const beginDrag = (event: React.PointerEvent, mode: "move" | Handle) => {
     if (!cropClip || exporting) return;
@@ -961,7 +810,6 @@ export default function App() {
       setTlPlayheadSec(0);
     }
     setActiveTool(next);
-    if (next === "trim") clampPlayheadToTrim();
   };
 
   const openDifferentFile = () => {
@@ -986,9 +834,6 @@ export default function App() {
     setActiveTool("none");
     setError(null);
     setNotice(null);
-    setThumbs([]);
-    thumbsClipRef.current = null;
-    setPlayheadSec(0);
   };
 
   const clipCropAspect = useCallback((target: Clip): number => {
@@ -1192,7 +1037,7 @@ export default function App() {
     const target = clipsRef.current.find((c) => c.id === clipId);
     if (!target) return;
     const sized = evenRect(target.crop, target.meta.width, target.meta.height);
-    const item: TimelineItem = { id: nextTlId("tlitem"), clipId, startSec: 0, rect: null };
+    const item: TimelineItem = { id: nextTlId("tlitem"), clipId, startSec: 0, rect: null, trim: { ...target.trim } };
     setTimeline((prev) => {
       const base: TimelineState =
         prev ?? { outputWidth: 0, outputHeight: 0, tracks: [{ id: nextTlId("track"), items: [] }] };
@@ -1229,6 +1074,7 @@ export default function App() {
           clipId,
           startSec: Math.max(0, Math.round(startSec * 10) / 10),
           rect,
+          trim: { ...target.trim },
         };
         return {
           ...withSize,
@@ -1259,6 +1105,7 @@ export default function App() {
           clipId,
           startSec: Math.max(0, Math.round(startSec * 10) / 10),
           rect,
+          trim: { ...target.trim },
         };
         return { ...withSize, tracks: [...withSize.tracks, { id: nextTlId("track"), items: [item] }] };
       });
@@ -1368,6 +1215,66 @@ export default function App() {
     tlBlockDragRef.current = null;
   };
 
+  const applyItemTrim = useCallback(
+    (trackIndex: number, entry: TlItemLayout, nextRaw: TrimRange) => {
+      const clamped = clampTrim(nextRaw, entry.clip.meta.durationSec);
+      if (trackIndex === 0) {
+        updateTlItem(0, entry.item.id, { trim: clamped });
+        return;
+      }
+      const delta = clamped.startSec - entry.item.trim.startSec;
+      updateTlItem(trackIndex, entry.item.id, {
+        trim: clamped,
+        startSec: Math.max(0, Math.round((entry.item.startSec + delta) * 1000) / 1000),
+      });
+    },
+    [updateTlItem],
+  );
+
+  const beginTlEdgeDrag = (event: React.PointerEvent, trackIndex: number, entry: TlItemLayout, edge: "start" | "end") => {
+    if (exporting) return;
+    event.preventDefault();
+    event.stopPropagation();
+    setSelectedTlItemId(entry.item.id);
+    const rowEl = (event.currentTarget as HTMLElement).closest(".tl-row-track") as HTMLElement | null;
+    tlEdgeDragRef.current = {
+      itemId: entry.item.id,
+      trackIndex,
+      edge,
+      startClientX: event.clientX,
+      rowWidth: rowEl?.getBoundingClientRect().width ?? 0,
+      totalSec: tlTotalSec,
+      origTrim: { ...entry.item.trim },
+      origStartSec: entry.item.startSec,
+      clipDurationSec: entry.clip.meta.durationSec,
+    };
+    (event.currentTarget as HTMLElement).setPointerCapture(event.pointerId);
+  };
+
+  const onTlEdgeDragMove = (event: React.PointerEvent) => {
+    const drag = tlEdgeDragRef.current;
+    if (!drag || drag.rowWidth <= 0 || drag.totalSec <= 0) return;
+    const dxSec = ((event.clientX - drag.startClientX) / drag.rowWidth) * drag.totalSec;
+    const nextRaw =
+      drag.edge === "start"
+        ? { ...drag.origTrim, startSec: drag.origTrim.startSec + dxSec }
+        : { ...drag.origTrim, endSec: drag.origTrim.endSec + dxSec };
+    const clamped = clampTrim(nextRaw, drag.clipDurationSec);
+    if (drag.trackIndex === 0 || drag.edge === "end") {
+      updateTlItem(drag.trackIndex, drag.itemId, { trim: clamped });
+      return;
+    }
+    const delta = clamped.startSec - drag.origTrim.startSec;
+    updateTlItem(drag.trackIndex, drag.itemId, {
+      trim: clamped,
+      startSec: Math.max(0, Math.round((drag.origStartSec + delta) * 1000) / 1000),
+    });
+  };
+
+  const endTlEdgeDrag = () => {
+    tlEdgeDragRef.current = null;
+  };
+
   const toggleTlPlayback = () => {
     const data = tlEntries();
     if (!data || data.totalSec <= 0) return;
@@ -1390,7 +1297,7 @@ export default function App() {
     if (baseEntry) {
       const el = tlVideoRefs.current.get(baseEntry.item.id);
       if (el) {
-        const target = baseEntry.clip.trim.startSec + (global - baseEntry.startSec);
+        const target = baseEntry.item.trim.startSec + (global - baseEntry.startSec);
         if (Math.abs(el.currentTime - target) > 0.05) el.currentTime = target;
         void el.play().catch(() => undefined);
       }
@@ -1604,93 +1511,6 @@ export default function App() {
     setCrop(clampCrop({ ...cropClip.crop, [field]: value }, cropClip.meta.width, cropClip.meta.height, ratio));
   };
 
-  const updateTrimField = (field: keyof TrimRange, raw: string) => {
-    if (!clip || !trimActive) return;
-    const value = Number(raw);
-    if (!Number.isFinite(value)) return;
-    setTrim(clampTrim({ ...clip.trim, [field]: value }, clip.meta.durationSec));
-  };
-
-  const setTrimStartToPlayhead = () => {
-    if (!clip || !trimActive) return;
-    const t = videoRef.current?.currentTime ?? clip.trim.startSec;
-    setTrim(clampTrim({ ...clip.trim, startSec: t }, clip.meta.durationSec));
-  };
-
-  const setTrimEndToPlayhead = () => {
-    if (!clip || !trimActive) return;
-    const t = videoRef.current?.currentTime ?? clip.trim.endSec;
-    setTrim(clampTrim({ ...clip.trim, endSec: t }, clip.meta.durationSec));
-  };
-
-  const timelineFraction = (clientX: number): number | null => {
-    const el = timelineRef.current;
-    if (!el) return null;
-    const rect = el.getBoundingClientRect();
-    if (rect.width === 0) return null;
-    return Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
-  };
-
-  const seekFromTimeline = (clientX: number) => {
-    if (!clip) return;
-    const frac = timelineFraction(clientX);
-    if (frac === null) return;
-    const video = videoRef.current;
-    if (!video) return;
-    let target = frac * clip.meta.durationSec;
-    if (trimActive) target = clampTimeToTrim(target, clip.trim);
-    video.currentTime = target;
-    setPlayheadSec(target);
-  };
-
-  const onTimelinePointerDown = (event: React.PointerEvent) => {
-    if (!clip || !trimActive) return;
-    seekFromTimeline(event.clientX);
-  };
-
-  const onTimelinePointerMove = (event: React.PointerEvent) => {
-    if (event.buttons !== 1 || tlDragRef.current) return;
-    seekFromTimeline(event.clientX);
-  };
-
-  const beginHandleDrag = (event: React.PointerEvent, which: "start" | "end") => {
-    if (!clip || exporting || !trimActive) return;
-    event.preventDefault();
-    event.stopPropagation();
-    (event.target as HTMLElement).setPointerCapture(event.pointerId);
-    tlDragRef.current = which;
-  };
-
-  const onHandleDragMove = (event: React.PointerEvent) => {
-    const which = tlDragRef.current;
-    if (!which || !clip) return;
-    const frac = timelineFraction(event.clientX);
-    if (frac === null) return;
-    const sec = frac * clip.meta.durationSec;
-    const next = clampTrim(
-      which === "start" ? { ...clip.trim, startSec: sec } : { ...clip.trim, endSec: sec },
-      clip.meta.durationSec,
-    );
-    setTrim(next);
-    const video = videoRef.current;
-    if (video) {
-      video.currentTime = which === "start" ? next.startSec : next.endSec;
-      setPlayheadSec(video.currentTime);
-    }
-  };
-
-  const endHandleDrag = () => {
-    tlDragRef.current = null;
-  };
-
-  const previewTrimRange = () => {
-    if (!clip || !trimActive) return;
-    const video = videoRef.current;
-    if (!video) return;
-    video.currentTime = clip.trim.startSec;
-    void video.play().catch(() => undefined);
-  };
-
   const runExport = async () => {
     if (!clip || exporting) return;
     if (!supported) {
@@ -1720,7 +1540,7 @@ export default function App() {
       if (tlExportReady && timeline && tlData) {
         const baseSpecs = tlData.tracks[0].items.map((entry) => ({
           input: entry.clip.input,
-          trim: entry.clip.trim,
+          trim: entry.item.trim,
           crop: evenRect(entry.clip.crop, entry.clip.meta.width, entry.clip.meta.height),
         }));
         const overlaySpecs = [];
@@ -1729,7 +1549,7 @@ export default function App() {
             if (!entry.item.rect) continue;
             overlaySpecs.push({
               input: entry.clip.input,
-              trim: entry.clip.trim,
+              trim: entry.item.trim,
               crop: evenRect(entry.clip.crop, entry.clip.meta.width, entry.clip.meta.height),
               startSec: entry.startSec,
               rect: entry.item.rect,
@@ -1939,6 +1759,45 @@ export default function App() {
     }
     return null;
   })();
+  const drawerItem = (() => {
+    if (!drawerItemId || !timeline) return null;
+    for (let ti = 0; ti < timeline.tracks.length; ti++) {
+      const found = timeline.tracks[ti].items.find((it) => it.id === drawerItemId);
+      if (found) return { item: found, trackIndex: ti };
+    }
+    return null;
+  })();
+  const drawerTrim: TrimRange = drawerItem ? drawerItem.item.trim : (cropClip?.trim ?? { startSec: 0, endSec: 0 });
+  const applyDrawerTrim = (nextRaw: TrimRange) => {
+    if (!cropClip) return;
+    const clamped = clampTrim(nextRaw, cropClip.meta.durationSec);
+    if (!drawerItem) {
+      setClipTrim(cropClip.id, clamped);
+      return;
+    }
+    if (drawerItem.trackIndex === 0) {
+      updateTlItem(0, drawerItem.item.id, { trim: clamped });
+      return;
+    }
+    const delta = clamped.startSec - drawerItem.item.trim.startSec;
+    updateTlItem(drawerItem.trackIndex, drawerItem.item.id, {
+      trim: clamped,
+      startSec: Math.max(0, Math.round((drawerItem.item.startSec + delta) * 1000) / 1000),
+    });
+  };
+  const updateDrawerTrimField = (field: keyof TrimRange, raw: string) => {
+    const value = Number(raw);
+    if (!Number.isFinite(value)) return;
+    applyDrawerTrim({ ...drawerTrim, [field]: value });
+  };
+  const setDrawerTrimToPlayhead = (field: keyof TrimRange) => {
+    const t = drawerVideoRef.current?.currentTime ?? drawerTrim.startSec;
+    applyDrawerTrim({ ...drawerTrim, [field]: t });
+  };
+  const closeDrawer = () => {
+    setCropClipId(null);
+    setDrawerItemId(null);
+  };
   const isLargeTlCanvas =
     timeline !== null && timeline.outputWidth > 0 && (timeline.outputWidth > 3840 || timeline.outputWidth * timeline.outputHeight > 8_300_000);
   const tlPct = (rect: TileRect): React.CSSProperties =>
@@ -1961,7 +1820,7 @@ export default function App() {
     if (!el) return;
     const global = tlGlobalRef.current;
     const target =
-      entry.clip.trim.startSec + Math.max(0, Math.min(entry.durationSec, global - entry.startSec));
+      entry.item.trim.startSec + Math.max(0, Math.min(entry.durationSec, global - entry.startSec));
     const apply = () => {
       if (Math.abs(el.currentTime - target) > 0.05) el.currentTime = target;
       if (tlPlayingRef.current) void el.play().catch(() => undefined);
@@ -1979,12 +1838,12 @@ export default function App() {
       if (!data) return;
       const entry = data.tracks[0]?.items.find((e) => e.item.id === activeBaseId);
       if (!entry) return;
-      const global = entry.startSec + Math.max(0, el.currentTime - entry.clip.trim.startSec);
+      const global = entry.startSec + Math.max(0, el.currentTime - entry.item.trim.startSec);
       tlGlobalRef.current = global;
       setTlPlayheadSec(global);
       syncTlVideos(global, tlPlayingRef.current);
       const isLastBase = data.tracks[0].items[data.tracks[0].items.length - 1]?.item.id === activeBaseId;
-      if (isLastBase && el.currentTime >= entry.clip.trim.endSec - 0.02 && tlPlayingRef.current) {
+      if (isLastBase && el.currentTime >= entry.item.trim.endSec - 0.02 && tlPlayingRef.current) {
         el.pause();
         if (data.totalSec > global + 0.05) {
           startTlClock();
@@ -2082,9 +1941,11 @@ export default function App() {
                     }}
                     onClick={() => {
                       setActiveClipId(item.id);
-                      setPlayheadSec(0);
                     }}
-                    onDoubleClick={() => setCropClipId(item.id)}
+                    onDoubleClick={() => {
+                      setCropClipId(item.id);
+                      setDrawerItemId(null);
+                    }}
                   >
                     <video className="pool-thumb" src={item.url} preload="metadata" muted playsInline />
                     <div className="pool-item-name">{item.file.name}</div>
@@ -2109,7 +1970,7 @@ export default function App() {
                 ))}
               </div>
               {clips.length > 0 && (
-                <Text type="supporting">Drag a video onto the canvas to place it as a tile. Double-click a video to crop it.</Text>
+                <Text type="supporting">Drag a video onto the canvas to place it as a tile. Double-click a video to edit its crop and trim.</Text>
               )}
             </aside>
             <div className="editor-column">
@@ -2170,13 +2031,6 @@ export default function App() {
                 <div className="toolbar-sticky">
                   <div className="toolbar">
                     <Button label="Open a different file" variant="secondary" onClick={openDifferentFile} isDisabled={exporting} />
-                    <Button
-                      label="Trim"
-                      variant={trimActive ? "primary" : "secondary"}
-                      aria-pressed={trimActive}
-                      onClick={() => toggleTool("trim")}
-                      isDisabled={exporting}
-                    />
                     <Button
                       label="Timeline"
                       variant={timelineActive ? "primary" : "secondary"}
@@ -2388,6 +2242,10 @@ export default function App() {
                               onPointerMove={onTileDragMove}
                               onPointerUp={endTileDrag}
                               onPointerCancel={endTileDrag}
+                              onDoubleClick={() => {
+                                setCropClipId(tile.clipId);
+                                setDrawerItemId(null);
+                              }}
                             >
                               <video
                                 ref={(el) => {
@@ -2540,7 +2398,7 @@ export default function App() {
                                 trackLayout.items.map((entry) => (
                                   <div
                                     key={entry.item.id}
-                                    className="tl-block"
+                                    className={`tl-block${entry.item.id === selectedTlItemId ? " selected" : ""}`}
                                     data-tl-block={entry.item.id}
                                     data-tl-item={entry.item.id}
                                     style={{ flexGrow: Math.max(entry.durationSec, 0.1), flexBasis: 0 }}
@@ -2549,11 +2407,15 @@ export default function App() {
                                       e.dataTransfer.setData(TL_ITEM_DRAG_TYPE, entry.item.id);
                                       e.dataTransfer.effectAllowed = "move";
                                     }}
-                                    onDoubleClick={() => setCropClipId(entry.clip.id)}
+                                    onPointerDown={() => setSelectedTlItemId(entry.item.id)}
+                                    onDoubleClick={() => {
+                                      setCropClipId(entry.clip.id);
+                                      setDrawerItemId(entry.item.id);
+                                    }}
                                   >
                                     <div className="tl-thumbs">
                                       {(
-                                        tlThumbs[`${entry.clip.id}|${entry.clip.trim.startSec}|${entry.clip.trim.endSec}`] ??
+                                        tlThumbs[`${entry.clip.id}|${entry.item.trim.startSec}|${entry.item.trim.endSec}`] ??
                                         []
                                       ).map((src, i) => (
                                         <img key={i} src={src} alt="" draggable={false} />
@@ -2562,6 +2424,22 @@ export default function App() {
                                     <div className="tl-block-label">
                                       {entry.clip.file.name} · {fmtSec(entry.durationSec)}
                                     </div>
+                                    <div
+                                      className="tl-block-edge left"
+                                      data-tl-edge="start"
+                                      onPointerDown={(e) => beginTlEdgeDrag(e, 0, entry, "start")}
+                                      onPointerMove={onTlEdgeDragMove}
+                                      onPointerUp={endTlEdgeDrag}
+                                      onPointerCancel={endTlEdgeDrag}
+                                    />
+                                    <div
+                                      className="tl-block-edge right"
+                                      data-tl-edge="end"
+                                      onPointerDown={(e) => beginTlEdgeDrag(e, 0, entry, "end")}
+                                      onPointerMove={onTlEdgeDragMove}
+                                      onPointerUp={endTlEdgeDrag}
+                                      onPointerCancel={endTlEdgeDrag}
+                                    />
                                     <button
                                       type="button"
                                       className="tl-block-remove"
@@ -2590,7 +2468,10 @@ export default function App() {
                                         width: `${tlTotalSec > 0 ? (entry.durationSec / tlTotalSec) * 100 : 0}%`,
                                       }}
                                       onPointerDown={(e) => beginTlBlockDrag(e, trackIndex, entry)}
-                                      onDoubleClick={() => setCropClipId(entry.clip.id)}
+                                      onDoubleClick={() => {
+                                        setCropClipId(entry.clip.id);
+                                        setDrawerItemId(entry.item.id);
+                                      }}
                                       onPointerMove={onTlBlockDragMove}
                                       onPointerUp={endTlBlockDrag}
                                       onPointerCancel={endTlBlockDrag}
@@ -2598,7 +2479,7 @@ export default function App() {
                                       <div className="tl-thumbs">
                                         {(
                                           tlThumbs[
-                                            `${entry.clip.id}|${entry.clip.trim.startSec}|${entry.clip.trim.endSec}`
+                                            `${entry.clip.id}|${entry.item.trim.startSec}|${entry.item.trim.endSec}`
                                           ] ?? []
                                         ).map((src, i) => (
                                           <img key={i} src={src} alt="" draggable={false} />
@@ -2607,6 +2488,22 @@ export default function App() {
                                       <div className="tl-block-label">
                                         {entry.clip.file.name} · {fmtSec(entry.durationSec)}
                                       </div>
+                                      <div
+                                        className="tl-block-edge left"
+                                        data-tl-edge="start"
+                                        onPointerDown={(e) => beginTlEdgeDrag(e, trackIndex, entry, "start")}
+                                        onPointerMove={onTlEdgeDragMove}
+                                        onPointerUp={endTlEdgeDrag}
+                                        onPointerCancel={endTlEdgeDrag}
+                                      />
+                                      <div
+                                        className="tl-block-edge right"
+                                        data-tl-edge="end"
+                                        onPointerDown={(e) => beginTlEdgeDrag(e, trackIndex, entry, "end")}
+                                        onPointerMove={onTlEdgeDragMove}
+                                        onPointerUp={endTlEdgeDrag}
+                                        onPointerCancel={endTlEdgeDrag}
+                                      />
                                       <button
                                         type="button"
                                         className="tl-block-remove"
@@ -2639,57 +2536,9 @@ export default function App() {
                       })}
                     <Text type="supporting">
                       {fmtSec(tlPlayheadSec)} / {fmtSec(tlTotalSec)} · Click a track to seek. Drag base clips to
-                      reorder them; drag overlay clips sideways to move them in time.
+                      reorder them; drag overlay clips sideways to move them in time. Drag a block's edges to trim
+                      it; double-click a block to edit its crop and trim.
                     </Text>
-                  </div>
-                )}
-                {trimActive && (
-                  <div className="trim-timeline">
-                    <div
-                      className="tl-track"
-                      ref={timelineRef}
-                      onPointerDown={onTimelinePointerDown}
-                      onPointerMove={onTimelinePointerMove}
-                    >
-                      <div className="tl-thumbs">
-                        {thumbs.map((src, i) => (
-                          <img key={i} src={src} alt="" draggable={false} />
-                        ))}
-                      </div>
-                      <div
-                        className="tl-dim"
-                        style={{ left: 0, width: `${(clip.trim.startSec / clip.meta.durationSec) * 100}%` }}
-                      />
-                      <div
-                        className="tl-dim"
-                        style={{ left: `${(clip.trim.endSec / clip.meta.durationSec) * 100}%`, right: 0 }}
-                      />
-                      <div
-                        className="tl-selection"
-                        style={{
-                          left: `${(clip.trim.startSec / clip.meta.durationSec) * 100}%`,
-                          width: `${((clip.trim.endSec - clip.trim.startSec) / clip.meta.durationSec) * 100}%`,
-                        }}
-                      />
-                      <div className="tl-playhead" style={{ left: `${(playheadSec / clip.meta.durationSec) * 100}%` }} />
-                      <div
-                        className="tl-handle"
-                        style={{ left: `${(clip.trim.startSec / clip.meta.durationSec) * 100}%` }}
-                        onPointerDown={(e) => beginHandleDrag(e, "start")}
-                        onPointerMove={onHandleDragMove}
-                        onPointerUp={endHandleDrag}
-                        onPointerCancel={endHandleDrag}
-                      />
-                      <div
-                        className="tl-handle"
-                        style={{ left: `${(clip.trim.endSec / clip.meta.durationSec) * 100}%` }}
-                        onPointerDown={(e) => beginHandleDrag(e, "end")}
-                        onPointerMove={onHandleDragMove}
-                        onPointerUp={endHandleDrag}
-                        onPointerCancel={endHandleDrag}
-                      />
-                    </div>
-                    <Text type="supporting">Drag the handles to set the range, or click the track to seek.</Text>
                   </div>
                 )}
                 <div className="panel">
@@ -2702,47 +2551,6 @@ export default function App() {
                     <Text type="supporting">Video codec: {clip.meta.videoCodec ?? "unknown"}</Text>
                     <Text type="supporting">Audio: {clip.meta.hasAudio ? (clip.meta.audioCodec ?? "yes") : "none"}</Text>
                   </div>
-                  {trimActive && (
-                    <>
-                      <div className="field-row">
-                        <div className="field">
-                          <label htmlFor="trim-start">Start (s)</label>
-                          <input
-                            id="trim-start"
-                            type="number"
-                            min={0}
-                            max={clip.meta.durationSec}
-                            step={0.1}
-                            value={Math.round(clip.trim.startSec * 100) / 100}
-                            onChange={(e) => updateTrimField("startSec", e.target.value)}
-                          />
-                        </div>
-                        <div className="field">
-                          <label htmlFor="trim-end">End (s)</label>
-                          <input
-                            id="trim-end"
-                            type="number"
-                            min={0}
-                            max={clip.meta.durationSec}
-                            step={0.1}
-                            value={Math.round(clip.trim.endSec * 100) / 100}
-                            onChange={(e) => updateTrimField("endSec", e.target.value)}
-                          />
-                        </div>
-                      </div>
-                      <HStack gap={3} vAlign="center">
-                        <Button label="Set start to playhead" variant="secondary" onClick={setTrimStartToPlayhead} isDisabled={exporting} />
-                        <Button label="Set end to playhead" variant="secondary" onClick={setTrimEndToPlayhead} isDisabled={exporting} />
-                        <Button label="Preview range" variant="secondary" onClick={previewTrimRange} isDisabled={exporting} />
-                      </HStack>
-                      <Text type="supporting">
-                        Selection: {fmtSec(selectionSec)} of {fmtSec(clip.meta.durationSec)}
-                      </Text>
-                      <Text type="supporting">
-                        To trim another video, select it in the Media column first.
-                      </Text>
-                    </>
-                  )}
                   {layoutActive && layout && (
                     <>
                       <HStack gap={3} vAlign="center">
@@ -2990,14 +2798,12 @@ export default function App() {
                                   </Text>
                                 </div>
                                 <HStack gap={2} vAlign="center">
-                                  {trackIndex > 0 && (
-                                    <Button
-                                      label="Select"
-                                      variant={entry.item.id === selectedTlItemId ? "primary" : "secondary"}
-                                      onClick={() => setSelectedTlItemId(entry.item.id)}
-                                      isDisabled={exporting}
-                                    />
-                                  )}
+                                  <Button
+                                    label="Select"
+                                    variant={entry.item.id === selectedTlItemId ? "primary" : "secondary"}
+                                    onClick={() => setSelectedTlItemId(entry.item.id)}
+                                    isDisabled={exporting}
+                                  />
                                   <Button
                                     label="Remove"
                                     variant="secondary"
@@ -3013,6 +2819,62 @@ export default function App() {
                           </div>
                         </div>
                       ))}
+                      {selectedTl && (
+                        <>
+                          <Text type="supporting">
+                            Selected clip: {selectedTl.entry.clip.file.name} (V{selectedTl.trackIndex + 1}
+                            {selectedTl.trackIndex === 0 ? " · Base" : ""}) · item trim (source)
+                          </Text>
+                          <div className="field-row">
+                            <div className="field">
+                              <label htmlFor="tl-item-trim-start">Start (s)</label>
+                              <input
+                                id="tl-item-trim-start"
+                                type="number"
+                                min={0}
+                                max={selectedTl.entry.clip.meta.durationSec}
+                                step={0.1}
+                                value={Math.round(selectedTl.entry.item.trim.startSec * 100) / 100}
+                                disabled={exporting}
+                                onChange={(e) => {
+                                  const value = Number(e.target.value);
+                                  if (Number.isFinite(value)) {
+                                    applyItemTrim(selectedTl.trackIndex, selectedTl.entry, {
+                                      ...selectedTl.entry.item.trim,
+                                      startSec: value,
+                                    });
+                                  }
+                                }}
+                              />
+                            </div>
+                            <div className="field">
+                              <label htmlFor="tl-item-trim-end">End (s)</label>
+                              <input
+                                id="tl-item-trim-end"
+                                type="number"
+                                min={0}
+                                max={selectedTl.entry.clip.meta.durationSec}
+                                step={0.1}
+                                value={Math.round(selectedTl.entry.item.trim.endSec * 100) / 100}
+                                disabled={exporting}
+                                onChange={(e) => {
+                                  const value = Number(e.target.value);
+                                  if (Number.isFinite(value)) {
+                                    applyItemTrim(selectedTl.trackIndex, selectedTl.entry, {
+                                      ...selectedTl.entry.item.trim,
+                                      endSec: value,
+                                    });
+                                  }
+                                }}
+                              />
+                            </div>
+                          </div>
+                          <Text type="supporting">
+                            Item duration: {fmtSec(selectedTl.entry.durationSec)} · Trimming an overlay's head
+                            shifts it so the remaining content stays in place.
+                          </Text>
+                        </>
+                      )}
                       {selectedTl && selectedTl.trackIndex > 0 && selectedTl.entry.item.rect && (
                         <>
                           <Text type="supporting">
@@ -3088,13 +2950,13 @@ export default function App() {
                     <>
                       <Text type="supporting">
                         {isFullFrame
-                          ? "Crop: full frame. Press Crop in the toolbar to edit it."
-                          : `Crop: ${Math.round(clip.crop.x)}, ${Math.round(clip.crop.y)} · ${outRect.width} × ${outRect.height}. Press Crop in the toolbar to edit it.`}
+                          ? "Crop: full frame. Double-click the video in Media to edit its crop and trim."
+                          : `Crop: ${Math.round(clip.crop.x)}, ${Math.round(clip.crop.y)} · ${outRect.width} × ${outRect.height}. Double-click the video in Media to edit its crop and trim.`}
                       </Text>
                       <Text type="supporting">
                         {trimIsFull
-                          ? "Trim: full length. Press Trim in the toolbar to edit it."
-                          : `Trim: ${fmtSec(clip.trim.startSec)} – ${fmtSec(clip.trim.endSec)} (${fmtSec(selectionSec)}). Press Trim in the toolbar to edit it.`}
+                          ? "Trim: full length."
+                          : `Trim: ${fmtSec(clip.trim.startSec)} – ${fmtSec(clip.trim.endSec)} (${fmtSec(selectionSec)}). Timeline items keep their own trim.`}
                       </Text>
                       {layout && (
                         <Text type="supporting">
@@ -3150,9 +3012,9 @@ export default function App() {
       <Drawer
         isOpen={cropClip !== null}
         onOpenChange={(open) => {
-          if (!open) setCropClipId(null);
+          if (!open) closeDrawer();
         }}
-        label={cropClip ? `Crop ${cropClip.file.name}` : "Crop"}
+        label={cropClip ? `Edit ${cropClip.file.name}` : "Edit clip"}
         side="end"
         width={520}
         data-testid="crop-drawer"
@@ -3161,13 +3023,13 @@ export default function App() {
           <VStack gap={4}>
             <DrawerHeader
               title={cropClip.file.name}
-              subtitle="Crop"
+              subtitle="Crop & trim"
               onOpenChange={(open) => {
-                if (!open) setCropClipId(null);
+                if (!open) closeDrawer();
               }}
             />
             <div className="drawer-stage" ref={drawerStageRef}>
-              <video src={cropClip.url} controls playsInline />
+              <video ref={drawerVideoRef} src={cropClip.url} controls playsInline />
               <div
                 className="crop-rect"
                 style={{
@@ -3216,7 +3078,49 @@ export default function App() {
             <Text type="supporting">
               Output: {cropOutRect.width} × {cropOutRect.height} · Output size is adjusted to even numbers.
             </Text>
-            <Text type="supporting">Applies to all uses of this clip.</Text>
+            <Text type="supporting">Crop applies to all uses of this clip.</Text>
+            <Text type="supporting">
+              Trim — {drawerItem ? `timeline item (V${drawerItem.trackIndex + 1})` : "this clip"}
+            </Text>
+            <div className="field-row">
+              <div className="field">
+                <label htmlFor="drawer-trim-start">Start (s)</label>
+                <input
+                  id="drawer-trim-start"
+                  type="number"
+                  min={0}
+                  max={cropClip.meta.durationSec}
+                  step={0.1}
+                  value={Math.round(drawerTrim.startSec * 100) / 100}
+                  onChange={(e) => updateDrawerTrimField("startSec", e.target.value)}
+                />
+              </div>
+              <div className="field">
+                <label htmlFor="drawer-trim-end">End (s)</label>
+                <input
+                  id="drawer-trim-end"
+                  type="number"
+                  min={0}
+                  max={cropClip.meta.durationSec}
+                  step={0.1}
+                  value={Math.round(drawerTrim.endSec * 100) / 100}
+                  onChange={(e) => updateDrawerTrimField("endSec", e.target.value)}
+                />
+              </div>
+            </div>
+            <HStack gap={3} vAlign="center">
+              <Button label="Set start to playhead" variant="secondary" onClick={() => setDrawerTrimToPlayhead("startSec")} isDisabled={exporting} />
+              <Button label="Set end to playhead" variant="secondary" onClick={() => setDrawerTrimToPlayhead("endSec")} isDisabled={exporting} />
+            </HStack>
+            <Text type="supporting">
+              Selection: {fmtSec(Math.max(0, drawerTrim.endSec - drawerTrim.startSec))} of{" "}
+              {fmtSec(cropClip.meta.durationSec)}
+            </Text>
+            <Text type="supporting">
+              {drawerItem
+                ? "This trim belongs to this timeline item only; the clip's own trim is unchanged. Trimming an overlay item's head shifts it so the remaining content stays in place."
+                : "This is the clip's default trim: used by single-clip export and Layout tiles, and copied into new timeline items."}
+            </Text>
           </VStack>
         )}
       </Drawer>
