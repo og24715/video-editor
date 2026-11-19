@@ -33,10 +33,6 @@ export interface Clip {
 
 export type AspectPreset = "free" | "16:9" | "9:16" | "1:1" | "4:3";
 
-export type ToolId = "layout" | "timeline";
-
-export type ActiveTool = "none" | ToolId;
-
 export function evenRect(crop: CropRect, maxWidth: number, maxHeight: number): CropRect {
   const x = Math.max(0, Math.min(Math.round(crop.x), maxWidth - 2));
   const y = Math.max(0, Math.min(Math.round(crop.y), maxHeight - 2));
@@ -61,13 +57,6 @@ export interface LayoutTile {
   offsetSec: number;
 }
 
-export interface LayoutState {
-  outputWidth: number;
-  outputHeight: number;
-  tiles: LayoutTile[];
-  audioSourceClipId: string | null;
-}
-
 export interface TimelineItem {
   id: string;
   clipId: string;
@@ -86,6 +75,12 @@ export interface TimelineState {
   outputWidth: number;
   outputHeight: number;
   tracks: TimelineTrack[];
+}
+
+function evenDown(value: number, min = 2): number {
+  const rounded = Math.floor(value);
+  const even = rounded - (rounded % 2);
+  return Math.max(min, even);
 }
 
 export function pipItemRect(outputWidth: number, outputHeight: number, aspect: number): TileRect {
@@ -113,69 +108,6 @@ export function containRect(sourceWidth: number, sourceHeight: number, outputWid
   const width = Math.round(sourceWidth * scale);
   const height = Math.round(sourceHeight * scale);
   return { x: Math.round((outputWidth - width) / 2), y: Math.round((outputHeight - height) / 2), width, height };
-}
-
-export interface PairRects {
-  outputWidth: number;
-  outputHeight: number;
-  rectA: TileRect;
-  rectB: TileRect;
-}
-
-function evenDown(value: number, min = 2): number {
-  const rounded = Math.floor(value);
-  const even = rounded - (rounded % 2);
-  return Math.max(min, even);
-}
-
-export function sideBySideRects(
-  mainWidth: number,
-  mainHeight: number,
-  secondWidth: number,
-  secondHeight: number,
-): PairRects {
-  const height = evenDown(Math.min(mainHeight, secondHeight));
-  const rectA: TileRect = {
-    x: 0,
-    y: 0,
-    width: evenDown((mainWidth * height) / mainHeight),
-    height,
-  };
-  const rectB: TileRect = {
-    x: rectA.width,
-    y: 0,
-    width: evenDown((secondWidth * height) / secondHeight),
-    height,
-  };
-  return {
-    outputWidth: rectA.width + rectB.width,
-    outputHeight: height,
-    rectA,
-    rectB,
-  };
-}
-
-export function pipRects(mainWidth: number, mainHeight: number, secondWidth: number, secondHeight: number): PairRects {
-  const outputWidth = evenDown(mainWidth);
-  const outputHeight = evenDown(mainHeight);
-  let rectBWidth = evenDown(outputWidth * 0.3);
-  let rectBHeight = evenDown((rectBWidth * secondHeight) / secondWidth);
-  if (rectBHeight > outputHeight - 32) {
-    rectBHeight = evenDown(outputHeight - 32);
-    rectBWidth = evenDown((rectBHeight * secondWidth) / secondHeight);
-  }
-  const rectB: TileRect = {
-    x: Math.max(0, outputWidth - rectBWidth - 16),
-    y: Math.max(0, outputHeight - rectBHeight - 16),
-    width: rectBWidth,
-    height: rectBHeight,
-  };
-  return {
-    outputWidth,
-    outputHeight,
-    rectA: { x: 0, y: 0, width: outputWidth, height: outputHeight },
-    rectB,
-  };
 }
 
 export function clampOutputSize(value: number): number {
@@ -226,28 +158,4 @@ export function resizedTiles(
     return { ...tile, rect: fitTileToCanvas(scaled, aspect, outputWidth, outputHeight) };
   });
   return { outputWidth, outputHeight, tiles: nextTiles };
-}
-
-export function droppedTileRect(
-  outputWidth: number,
-  outputHeight: number,
-  aspect: number,
-  centerX: number,
-  centerY: number,
-): TileRect {
-  const safeAspect = aspect > 0 ? aspect : 16 / 9;
-  let width = Math.max(16, Math.round(outputWidth * 0.4));
-  width -= width % 2;
-  let height = Math.round(width / safeAspect);
-  if (height > outputHeight) {
-    height = outputHeight;
-    width = Math.round(height * safeAspect);
-  }
-  if (width > outputWidth) {
-    width = outputWidth;
-    height = Math.round(width / safeAspect);
-  }
-  const x = Math.round(Math.max(0, Math.min(centerX - width / 2, Math.max(0, outputWidth - width))));
-  const y = Math.round(Math.max(0, Math.min(centerY - height / 2, Math.max(0, outputHeight - height))));
-  return { x, y, width, height };
 }

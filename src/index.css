@@ -149,16 +149,7 @@ body {
   gap: 8px;
 }
 
-.toolbar-sticky {
-  position: sticky;
-  top: 8px;
-  z-index: 30;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
-.toolbar {
+.transport-row {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
@@ -167,15 +158,23 @@ body {
   border: 1px solid var(--color-border);
   border-radius: var(--radius-container, 16px);
   padding: 10px 12px;
-  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.25);
 }
 
-.toolbar-spacer {
+.transport-spacer {
   flex: 1;
   min-width: 8px;
 }
 
-.toolbar-progress {
+.transport-seek {
+  flex: 1 1 240px;
+  min-width: 160px;
+}
+
+.transport-seek .seekbar {
+  padding-top: 0;
+}
+
+.export-progress {
   display: flex;
   align-items: center;
   gap: 12px;
@@ -185,7 +184,7 @@ body {
   padding: 8px 12px;
 }
 
-.toolbar-progress .progress-track {
+.export-progress .progress-track {
   flex: 1;
 }
 
@@ -205,7 +204,7 @@ body {
   font-size: 13px;
 }
 
-.layout-warning {
+.canvas-warning {
   color: var(--color-warning, #f5b14c);
 }
 
@@ -246,22 +245,6 @@ body {
   gap: 4px;
 }
 
-.tile-offset-field {
-  flex: 0 1 140px;
-  min-width: 110px;
-}
-
-.field select {
-  background: var(--color-background-card);
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-element, 10px);
-  color: var(--color-text-primary);
-  padding: 10px 12px;
-  font-size: 15px;
-  width: 100%;
-  box-sizing: border-box;
-}
-
 .stage {
   position: relative;
   line-height: 0;
@@ -292,13 +275,13 @@ body {
   height: auto;
 }
 
-.layout-wrap {
+.composite-wrap {
   width: 100%;
   max-width: 880px;
   line-height: normal;
 }
 
-.layout-stage {
+.composite-stage {
   position: relative;
   width: 100%;
   background: #000;
@@ -307,7 +290,7 @@ body {
   line-height: 0;
 }
 
-.layout-tile {
+.composite-tile {
   -webkit-user-select: none;
   user-select: none;
   position: absolute;
@@ -320,7 +303,7 @@ body {
   background: #111;
 }
 
-.layout-tile video {
+.composite-tile video {
   display: block;
   position: absolute;
   width: 100%;
@@ -331,7 +314,7 @@ body {
   pointer-events: none;
 }
 
-.layout-tile-handle {
+.composite-tile-handle {
   position: absolute;
   right: 0;
   bottom: 0;
@@ -344,14 +327,6 @@ body {
   cursor: nwse-resize;
   touch-action: none;
   z-index: 3;
-}
-
-.layout-controls {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 14px;
-  padding-top: 14px;
 }
 
 .seekbar {
