@@ -2457,9 +2457,6 @@ export default function App() {
                       <div className="transport-seek">
                         <SeekBar value={tlPlayheadSec} total={tlTotalSec} onSeek={seekTlTo} isDisabled={exporting} />
                       </div>
-                      <Text type="supporting">
-                        {fmtSec(tlPlayheadSec)} / {fmtSec(tlTotalSec)}
-                      </Text>
                     </>
                   )}
                   <div className="transport-spacer" />

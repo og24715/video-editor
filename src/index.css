@@ -143,12 +143,24 @@ body {
 @media (max-width: 900px) {
   .workspace {
     flex-direction: column;
+    align-items: stretch;
   }
 
   .pool {
     width: 100%;
     position: static;
     max-height: none;
+  }
+
+  .editor-column {
+    width: 100%;
+  }
+}
+
+@media (max-width: 640px) {
+  .transport-seek {
+    flex: 1 1 100%;
+    order: 5;
   }
 }
 
