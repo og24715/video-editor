@@ -10,10 +10,11 @@ import { HStack } from "@astryxdesign/core/HStack";
 import { VStack } from "@astryxdesign/core/VStack";
 import { Spinner } from "@astryxdesign/core/Spinner";
 import { FolderOpen } from "lucide-react";
-import type { ActiveTool, AspectPreset, Clip, CropRect, LayoutState, LayoutTile, TileRect, ToolId, TrimRange } from "./model";
-import { droppedTileRect, evenRect, pipRects, resizedTiles, sideBySideRects } from "./model";
+import type { ActiveTool, AspectPreset, Clip, CropRect, LayoutState, LayoutTile, TileRect, TimelineItem, TimelineState, TimelineTrack, ToolId, TrimRange } from "./model";
+import { clampOutputSize, droppedTileRect, evenRect, pipItemRect, pipRects, resizedTiles, sideBySideRects } from "./model";
 import { ExportCancelledError, exportCropped, openInput, readMeta, webCodecsSupported } from "./exporter";
 import { exportComposite } from "./compositeExporter";
+import { exportTimeline } from "./timelineExporter";
 import { exportGif, gifOutputSize } from "./gifExporter";
 
 const ASPECTS: { value: AspectPreset; label: string; ratio: number | null }[] = [
@@ -162,6 +163,102 @@ function nextTileId(): string {
   return `tile-${Date.now()}-${tileIdCounter}`;
 }
 
+let tlIdCounter = 0;
+function nextTlId(prefix: string): string {
+  tlIdCounter += 1;
+  return `${prefix}-${Date.now()}-${tlIdCounter}`;
+}
+
+const TL_ITEM_DRAG_TYPE = "application/x-video-editor-tl-item";
+
+interface TlItemLayout {
+  item: TimelineItem;
+  clip: Clip;
+  startSec: number;
+  durationSec: number;
+}
+
+interface TlTrackLayout {
+  track: TimelineTrack;
+  items: TlItemLayout[];
+}
+
+function layoutTimeline(
+  tl: TimelineState,
+  clips: Clip[],
+): { tracks: TlTrackLayout[]; totalSec: number; baseEndSec: number } {
+  let totalSec = 0;
+  let baseEndSec = 0;
+  const tracks = tl.tracks.map((track, trackIndex) => {
+    let cursor = 0;
+    const items: TlItemLayout[] = [];
+    for (const item of track.items) {
+      const itemClip = clips.find((c) => c.id === item.clipId);
+      if (!itemClip) continue;
+      const durationSec = Math.max(0, itemClip.trim.endSec - itemClip.trim.startSec);
+      const startSec = trackIndex === 0 ? cursor : Math.max(0, item.startSec);
+      cursor += durationSec;
+      const endSec = startSec + durationSec;
+      if (trackIndex === 0) baseEndSec = Math.max(baseEndSec, endSec);
+      totalSec = Math.max(totalSec, endSec);
+      items.push({ item, clip: itemClip, startSec, durationSec });
+    }
+    return { track, items };
+  });
+  return { tracks, totalSec, baseEndSec };
+}
+
+async function captureThumbs(
+  url: string,
+  metaWidth: number,
+  metaHeight: number,
+  startSec: number,
+  endSec: number,
+  count: number,
+): Promise<string[]> {
+  const video = document.createElement("video");
+  video.muted = true;
+  video.playsInline = true;
+  video.preload = "auto";
+  video.src = url;
+  const canvas = document.createElement("canvas");
+  const thumbHeight = 48;
+  const thumbWidth = Math.max(24, Math.round((thumbHeight * metaWidth) / Math.max(1, metaHeight)));
+  canvas.width = thumbWidth;
+  canvas.height = thumbHeight;
+  const ctx = canvas.getContext("2d");
+  if (!ctx) return [];
+  const seekTo = (t: number) =>
+    new Promise<void>((resolve) => {
+      const done = () => {
+        video.removeEventListener("seeked", done);
+        resolve();
+      };
+      video.addEventListener("seeked", done);
+      video.currentTime = t;
+    });
+  try {
+    await new Promise<void>((resolve, reject) => {
+      video.addEventListener("loadeddata", () => resolve(), { once: true });
+      video.addEventListener("error", () => reject(new Error("thumbnail load failed")), { once: true });
+    });
+    const urls: string[] = [];
+    const span = Math.max(0.05, endSec - startSec);
+    for (let i = 0; i < count; i++) {
+      const t = startSec + ((i + 0.5) / count) * span;
+      await seekTo(t);
+      ctx.drawImage(video, 0, 0, thumbWidth, thumbHeight);
+      urls.push(canvas.toDataURL("image/jpeg", 0.7));
+    }
+    return urls;
+  } catch {
+    return [];
+  } finally {
+    video.removeAttribute("src");
+    video.load();
+  }
+}
+
 export default function App() {
   const [clips, setClips] = useState<Clip[]>([]);
   const [activeClipId, setActiveClipId] = useState<string | null>(null);
@@ -189,6 +286,14 @@ export default function App() {
   const [layoutPlaying, setLayoutPlaying] = useState(false);
   const [outWText, setOutWText] = useState("");
   const [outHText, setOutHText] = useState("");
+  const [timeline, setTimeline] = useState<TimelineState | null>(null);
+  const [tlOutWText, setTlOutWText] = useState("");
+  const [tlOutHText, setTlOutHText] = useState("");
+  const [selectedTlItemId, setSelectedTlItemId] = useState<string | null>(null);
+  const [tlPlaying, setTlPlaying] = useState(false);
+  const [tlPlayheadSec, setTlPlayheadSec] = useState(0);
+  const [tlThumbs, setTlThumbs] = useState<Record<string, string[]>>({});
+  const [resultTimeline, setResultTimeline] = useState(false);
   const [thumbs, setThumbs] = useState<string[]>([]);
   const thumbsClipRef = useRef<string | null>(null);
   const timelineRef = useRef<HTMLDivElement | null>(null);
@@ -203,6 +308,29 @@ export default function App() {
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const dragRef = useRef<DragState | null>(null);
   const cancelRef = useRef(false);
+  const tlStateRef = useRef<TimelineState | null>(null);
+  const tlPlayingRef = useRef(false);
+  const tlGlobalRef = useRef(0);
+  const tlVideoRefs = useRef<Map<string, HTMLVideoElement>>(new Map());
+  const tlStageRef = useRef<HTMLDivElement | null>(null);
+  const tlTileDragRef = useRef<{
+    itemId: string;
+    trackIndex: number;
+    mode: "move" | "resize";
+    startClientX: number;
+    startClientY: number;
+    startRect: TileRect;
+  } | null>(null);
+  const tlBlockDragRef = useRef<{
+    itemId: string;
+    trackIndex: number;
+    startClientX: number;
+    startSec: number;
+    rowWidth: number;
+    totalSec: number;
+  } | null>(null);
+  const tlClockRef = useRef<number | null>(null);
+  const tlThumbsPendingRef = useRef<Set<string>>(new Set());
   const supported = webCodecsSupported();
 
   const clip = clips.find((c) => c.id === activeClipId) ?? clips[0] ?? null;
@@ -210,6 +338,7 @@ export default function App() {
   const cropActive = activeTool === "crop";
   const trimActive = activeTool === "trim";
   const layoutActive = activeTool === "layout";
+  const timelineActive = activeTool === "timeline";
   const compositing = layout !== null && layout.tiles.length >= 2;
   const trimRef = useRef<TrimRange>({ startSec: 0, endSec: 0 });
   const durationRef = useRef(0);
@@ -220,6 +349,7 @@ export default function App() {
   toolRef.current = activeTool;
   layoutRef.current = layout;
   clipsRef.current = clips;
+  tlStateRef.current = timeline;
   if (clip) {
     trimRef.current = clip.trim;
     durationRef.current = clip.meta.durationSec;
@@ -231,6 +361,13 @@ export default function App() {
       setOutHText(String(layout.outputHeight));
     }
   }, [layout?.outputWidth, layout?.outputHeight]);
+
+  useEffect(() => {
+    if (timeline) {
+      setTlOutWText(timeline.outputWidth > 0 ? String(timeline.outputWidth) : "");
+      setTlOutHText(timeline.outputHeight > 0 ? String(timeline.outputHeight) : "");
+    }
+  }, [timeline?.outputWidth, timeline?.outputHeight]);
 
   const setCrop = useCallback((crop: CropRect) => {
     setClips((prev) => {
@@ -327,6 +464,16 @@ export default function App() {
           : tiles[0].clipId;
       return { ...prev, tiles, audioSourceClipId };
     });
+    setTimeline((prev) => {
+      if (!prev) return prev;
+      let changed = false;
+      const tracks = prev.tracks.map((t) => {
+        const items = t.items.filter((it) => it.clipId !== clipId);
+        if (items.length !== t.items.length) changed = true;
+        return { ...t, items };
+      });
+      return changed ? { ...prev, tracks } : prev;
+    });
     setActiveClipId((prev) => {
       if (prev !== clipId) return prev;
       const remaining = clipsRef.current.filter((c) => c.id !== clipId);
@@ -334,6 +481,99 @@ export default function App() {
     });
     setLayoutPlaying(false);
   }, []);
+
+  const tlEntries = useCallback((): { tracks: TlTrackLayout[]; totalSec: number; baseEndSec: number } | null => {
+    const tl = tlStateRef.current;
+    if (!tl) return null;
+    return layoutTimeline(tl, clipsRef.current);
+  }, []);
+
+  const syncTlVideos = useCallback(
+    (globalSec: number, playing: boolean) => {
+      const data = tlEntries();
+      if (!data) return;
+      data.tracks.forEach((trackLayout, trackIndex) => {
+        if (trackIndex === 0) return;
+        for (const entry of trackLayout.items) {
+          const el = tlVideoRefs.current.get(entry.item.id);
+          if (!el) continue;
+          const local = globalSec - entry.startSec;
+          if (local < 0 || local > entry.durationSec) {
+            if (!el.paused) el.pause();
+            if (local < 0 && Math.abs(el.currentTime - entry.clip.trim.startSec) > 0.05) {
+              el.currentTime = entry.clip.trim.startSec;
+            }
+            continue;
+          }
+          const target = entry.clip.trim.startSec + local;
+          if (playing) {
+            if (el.paused) {
+              void el.play().catch(() => undefined);
+            } else if (Math.abs(el.currentTime - target) > 0.3) {
+              el.currentTime = target;
+            }
+          } else if (Math.abs(el.currentTime - target) > 0.05) {
+            el.currentTime = target;
+          }
+        }
+      });
+    },
+    [tlEntries],
+  );
+
+  const stopTlClock = useCallback(() => {
+    if (tlClockRef.current !== null) {
+      window.clearInterval(tlClockRef.current);
+      tlClockRef.current = null;
+    }
+  }, []);
+
+  const startTlClock = useCallback(() => {
+    stopTlClock();
+    let last = performance.now();
+    tlClockRef.current = window.setInterval(() => {
+      const data = tlEntries();
+      if (!data) {
+        stopTlClock();
+        return;
+      }
+      const now = performance.now();
+      const dt = (now - last) / 1000;
+      last = now;
+      let global = tlGlobalRef.current + dt;
+      if (global >= data.totalSec) {
+        global = data.totalSec;
+        tlGlobalRef.current = global;
+        setTlPlayheadSec(global);
+        syncTlVideos(global, false);
+        for (const el of tlVideoRefs.current.values()) el.pause();
+        tlPlayingRef.current = false;
+        setTlPlaying(false);
+        stopTlClock();
+        return;
+      }
+      tlGlobalRef.current = global;
+      setTlPlayheadSec(global);
+      syncTlVideos(global, true);
+    }, 100);
+  }, [stopTlClock, tlEntries, syncTlVideos]);
+
+  const seekTlTo = useCallback(
+    (globalSec: number) => {
+      const data = tlEntries();
+      if (!data) return;
+      const global = Math.max(0, Math.min(data.totalSec, globalSec));
+      tlGlobalRef.current = global;
+      setTlPlayheadSec(global);
+      const baseEntry = data.tracks[0]?.items.find((e) => global >= e.startSec && global < e.startSec + e.durationSec);
+      if (baseEntry) {
+        const el = tlVideoRefs.current.get(baseEntry.item.id);
+        if (el) el.currentTime = baseEntry.clip.trim.startSec + (global - baseEntry.startSec);
+      }
+      syncTlVideos(global, tlPlayingRef.current);
+    },
+    [tlEntries, syncTlVideos],
+  );
 
   useEffect(() => {
     return () => {
@@ -466,6 +706,50 @@ export default function App() {
   }, [layoutActive, layout?.tiles.map((t) => `${t.id}:${t.clipId}`).join("|")]);
 
   useEffect(() => {
+    if (timelineActive) return;
+    stopTlClock();
+    tlPlayingRef.current = false;
+    setTlPlaying(false);
+    for (const el of tlVideoRefs.current.values()) el.pause();
+  }, [timelineActive, stopTlClock]);
+
+  useEffect(() => {
+    if (!timelineActive || !timeline) return;
+    const needed = new Map<string, Clip>();
+    for (const track of timeline.tracks) {
+      for (const item of track.items) {
+        const itemClip = clips.find((c) => c.id === item.clipId);
+        if (!itemClip) continue;
+        const key = `${itemClip.id}|${itemClip.trim.startSec}|${itemClip.trim.endSec}`;
+        if (!tlThumbs[key] && !tlThumbsPendingRef.current.has(key)) needed.set(key, itemClip);
+      }
+    }
+    if (needed.size === 0) return;
+    let cancelled = false;
+    void (async () => {
+      for (const [key, itemClip] of needed) {
+        if (cancelled) return;
+        tlThumbsPendingRef.current.add(key);
+        const urls = await captureThumbs(
+          itemClip.url,
+          itemClip.meta.width,
+          itemClip.meta.height,
+          itemClip.trim.startSec,
+          Math.max(itemClip.trim.startSec + 0.05, itemClip.trim.endSec - 0.02),
+          6,
+        );
+        tlThumbsPendingRef.current.delete(key);
+        if (!cancelled && urls.length > 0) {
+          setTlThumbs((prev) => ({ ...prev, [key]: urls }));
+        }
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [timelineActive, timeline, clips, tlThumbs]);
+
+  useEffect(() => {
     if (trimActive) clampPlayheadToTrim();
   }, [trimActive, clip?.trim, clampPlayheadToTrim]);
 
@@ -589,9 +873,14 @@ export default function App() {
   };
 
   const toggleTool = (tool: ToolId) => {
-    if (tool === "crop" || tool === "layout") videoRef.current?.pause();
+    if (tool === "crop" || tool === "layout" || tool === "timeline") videoRef.current?.pause();
     const next: ActiveTool = activeTool === tool ? "none" : tool;
     if (next !== "layout") setLayoutPlaying(false);
+    if (next === "timeline") {
+      setTimeline((prev) => prev ?? { outputWidth: 0, outputHeight: 0, tracks: [{ id: nextTlId("track"), items: [] }] });
+      tlGlobalRef.current = 0;
+      setTlPlayheadSec(0);
+    }
     setActiveTool(next);
     if (next === "trim") clampPlayheadToTrim();
   };
@@ -611,6 +900,12 @@ export default function App() {
     setActiveClipId(null);
     setLayout(null);
     setLayoutPlaying(false);
+    setTimeline(null);
+    setSelectedTlItemId(null);
+    setTlPlayheadSec(0);
+    tlGlobalRef.current = 0;
+    setTlThumbs({});
+    setResultTimeline(false);
     setResultUrl(null);
     setActiveTool("none");
     setError(null);
@@ -775,6 +1070,283 @@ export default function App() {
       setOutWText(String(layout.outputWidth));
       setOutHText(String(layout.outputHeight));
     }
+  };
+
+  const updateTlItem = useCallback((trackIndex: number, itemId: string, patch: Partial<TimelineItem>) => {
+    setTimeline((prev) =>
+      prev
+        ? {
+            ...prev,
+            tracks: prev.tracks.map((t, i) =>
+              i === trackIndex ? { ...t, items: t.items.map((it) => (it.id === itemId ? { ...it, ...patch } : it)) } : t,
+            ),
+          }
+        : prev,
+    );
+  }, []);
+
+  const removeTlItem = useCallback(
+    (trackIndex: number, itemId: string) => {
+      setTimeline((prev) =>
+        prev
+          ? { ...prev, tracks: prev.tracks.map((t, i) => (i === trackIndex ? { ...t, items: t.items.filter((it) => it.id !== itemId) } : t)) }
+          : prev,
+      );
+      setSelectedTlItemId((prev) => (prev === itemId ? null : prev));
+    },
+    [],
+  );
+
+  const addTrack = useCallback(() => {
+    setTimeline((prev) =>
+      prev ? { ...prev, tracks: [...prev.tracks, { id: nextTlId("track"), items: [] }] } : prev,
+    );
+  }, []);
+
+  const removeTrack = useCallback((trackIndex: number) => {
+    if (trackIndex <= 0) return;
+    const current = tlStateRef.current;
+    if (!current || !current.tracks[trackIndex]) return;
+    const removedIds = new Set(current.tracks[trackIndex].items.map((it) => it.id));
+    setSelectedTlItemId((selected) => (selected && removedIds.has(selected) ? null : selected));
+    setTimeline({ ...current, tracks: current.tracks.filter((_, i) => i !== trackIndex) });
+  }, []);
+
+  const addClipToBase = useCallback((clipId: string, index?: number) => {
+    const target = clipsRef.current.find((c) => c.id === clipId);
+    if (!target) return;
+    const sized = evenRect(target.crop, target.meta.width, target.meta.height);
+    const item: TimelineItem = { id: nextTlId("tlitem"), clipId, startSec: 0, rect: null };
+    setTimeline((prev) => {
+      const base: TimelineState =
+        prev ?? { outputWidth: 0, outputHeight: 0, tracks: [{ id: nextTlId("track"), items: [] }] };
+      const withSize =
+        base.outputWidth > 0 && base.outputHeight > 0
+          ? base
+          : { ...base, outputWidth: sized.width, outputHeight: sized.height };
+      const tracks = withSize.tracks.map((t, i) => {
+        if (i !== 0) return t;
+        const items = [...t.items];
+        if (index === undefined || index < 0 || index > items.length) items.push(item);
+        else items.splice(index, 0, item);
+        return { ...t, items };
+      });
+      return { ...withSize, tracks };
+    });
+  }, []);
+
+  const addClipToOverlay = useCallback(
+    (clipId: string, trackIndex: number, startSec: number) => {
+      const target = clipsRef.current.find((c) => c.id === clipId);
+      if (!target || trackIndex <= 0) return;
+      const sized = evenRect(target.crop, target.meta.width, target.meta.height);
+      const itemId = nextTlId("tlitem");
+      setTimeline((prev) => {
+        if (!prev || !prev.tracks[trackIndex]) return prev;
+        const withSize =
+          prev.outputWidth > 0 && prev.outputHeight > 0
+            ? prev
+            : { ...prev, outputWidth: sized.width, outputHeight: sized.height };
+        const rect = pipItemRect(withSize.outputWidth, withSize.outputHeight, clipCropAspect(target));
+        const item: TimelineItem = {
+          id: itemId,
+          clipId,
+          startSec: Math.max(0, Math.round(startSec * 10) / 10),
+          rect,
+        };
+        return {
+          ...withSize,
+          tracks: withSize.tracks.map((t, i) => (i === trackIndex ? { ...t, items: [...t.items, item] } : t)),
+        };
+      });
+      setSelectedTlItemId(itemId);
+    },
+    [clipCropAspect],
+  );
+
+  const reorderBaseItem = useCallback((itemId: string, rawTargetIndex: number) => {
+    setTimeline((prev) => {
+      if (!prev) return prev;
+      const items = [...prev.tracks[0].items];
+      const from = items.findIndex((it) => it.id === itemId);
+      if (from < 0) return prev;
+      let to = Math.max(0, Math.min(items.length, rawTargetIndex));
+      const [moved] = items.splice(from, 1);
+      if (to > from) to -= 1;
+      items.splice(to, 0, moved);
+      return { ...prev, tracks: prev.tracks.map((t, i) => (i === 0 ? { ...t, items } : t)) };
+    });
+  }, []);
+
+  const applyTlOutputSize = (newWidth: number, newHeight: number) => {
+    if (!timeline) return;
+    const overlayTiles: LayoutTile[] = [];
+    const aspects: number[] = [];
+    timeline.tracks.forEach((track, trackIndex) => {
+      if (trackIndex === 0) return;
+      for (const item of track.items) {
+        if (!item.rect) continue;
+        overlayTiles.push({ id: item.id, clipId: item.clipId, rect: item.rect, offsetSec: 0 });
+        const target = clips.find((c) => c.id === item.clipId);
+        aspects.push(target ? clipCropAspect(target) : 16 / 9);
+      }
+    });
+    if (overlayTiles.length === 0) {
+      setTimeline({ ...timeline, outputWidth: clampOutputSize(newWidth), outputHeight: clampOutputSize(newHeight) });
+      return;
+    }
+    const resized = resizedTiles(overlayTiles, aspects, newWidth, newHeight, timeline.outputWidth, timeline.outputHeight);
+    const rectById = new Map(resized.tiles.map((t) => [t.id, t.rect]));
+    setTimeline({
+      ...timeline,
+      outputWidth: resized.outputWidth,
+      outputHeight: resized.outputHeight,
+      tracks: timeline.tracks.map((track, trackIndex) =>
+        trackIndex === 0
+          ? track
+          : {
+              ...track,
+              items: track.items.map((item) =>
+                item.rect && rectById.has(item.id) ? { ...item, rect: rectById.get(item.id) ?? item.rect } : item,
+              ),
+            },
+      ),
+    });
+  };
+
+  const commitTlOutputSize = (event?: React.FocusEvent<HTMLInputElement>) => {
+    const next = event?.relatedTarget as HTMLElement | null;
+    if (next && (next.id === "timeline-output-width" || next.id === "timeline-output-height")) return;
+    if (!timeline) return;
+    const width = Number(tlOutWText);
+    const height = Number(tlOutHText);
+    if (Number.isFinite(width) && Number.isFinite(height) && width > 0 && height > 0) {
+      applyTlOutputSize(width, height);
+    } else {
+      setTlOutWText(timeline.outputWidth > 0 ? String(timeline.outputWidth) : "");
+      setTlOutHText(timeline.outputHeight > 0 ? String(timeline.outputHeight) : "");
+    }
+  };
+
+  const baseInsertIndex = (rowEl: HTMLElement, clientX: number): number => {
+    const blocks = Array.from(rowEl.querySelectorAll("[data-tl-block]"));
+    for (let i = 0; i < blocks.length; i++) {
+      const r = blocks[i].getBoundingClientRect();
+      if (clientX < r.left + r.width / 2) return i;
+    }
+    return blocks.length;
+  };
+
+  const beginTlBlockDrag = (event: React.PointerEvent, trackIndex: number, entry: TlItemLayout) => {
+    if (exporting) return;
+    event.stopPropagation();
+    setSelectedTlItemId(entry.item.id);
+    const rowEl = (event.currentTarget as HTMLElement).closest(".tl-row-track") as HTMLElement | null;
+    tlBlockDragRef.current = {
+      itemId: entry.item.id,
+      trackIndex,
+      startClientX: event.clientX,
+      startSec: entry.item.startSec,
+      rowWidth: rowEl?.getBoundingClientRect().width ?? 0,
+      totalSec: tlTotalSec,
+    };
+    (event.currentTarget as HTMLElement).setPointerCapture(event.pointerId);
+  };
+
+  const onTlBlockDragMove = (event: React.PointerEvent) => {
+    const drag = tlBlockDragRef.current;
+    if (!drag || drag.rowWidth <= 0 || drag.totalSec <= 0) return;
+    const dxSec = ((event.clientX - drag.startClientX) / drag.rowWidth) * drag.totalSec;
+    const next = Math.max(0, Math.round((drag.startSec + dxSec) * 10) / 10);
+    updateTlItem(drag.trackIndex, drag.itemId, { startSec: next });
+  };
+
+  const endTlBlockDrag = () => {
+    tlBlockDragRef.current = null;
+  };
+
+  const toggleTlPlayback = () => {
+    const data = tlEntries();
+    if (!data || data.totalSec <= 0) return;
+    if (tlPlayingRef.current) {
+      tlPlayingRef.current = false;
+      setTlPlaying(false);
+      stopTlClock();
+      for (const el of tlVideoRefs.current.values()) el.pause();
+      return;
+    }
+    let global = tlGlobalRef.current;
+    if (global >= data.totalSec - 0.05) {
+      global = 0;
+      tlGlobalRef.current = 0;
+      setTlPlayheadSec(0);
+    }
+    tlPlayingRef.current = true;
+    setTlPlaying(true);
+    const baseEntry = data.tracks[0]?.items.find((e) => global >= e.startSec && global < e.startSec + e.durationSec);
+    if (baseEntry) {
+      const el = tlVideoRefs.current.get(baseEntry.item.id);
+      if (el) {
+        const target = baseEntry.clip.trim.startSec + (global - baseEntry.startSec);
+        if (Math.abs(el.currentTime - target) > 0.05) el.currentTime = target;
+        void el.play().catch(() => undefined);
+      }
+      syncTlVideos(global, true);
+    } else {
+      syncTlVideos(global, true);
+      startTlClock();
+    }
+  };
+
+  const beginTlTileDrag = (event: React.PointerEvent, trackIndex: number, entry: TlItemLayout, mode: "move" | "resize") => {
+    if (!timeline || exporting || !timelineActive || !entry.item.rect) return;
+    event.preventDefault();
+    event.stopPropagation();
+    (event.target as HTMLElement).setPointerCapture(event.pointerId);
+    tlTileDragRef.current = {
+      itemId: entry.item.id,
+      trackIndex,
+      mode,
+      startClientX: event.clientX,
+      startClientY: event.clientY,
+      startRect: { ...entry.item.rect },
+    };
+  };
+
+  const onTlTileDragMove = (event: React.PointerEvent) => {
+    const drag = tlTileDragRef.current;
+    const stage = tlStageRef.current;
+    if (!drag || !timeline || !stage) return;
+    const bounds = stage.getBoundingClientRect();
+    if (bounds.width === 0) return;
+    const scale = timeline.outputWidth / bounds.width;
+    const dx = (event.clientX - drag.startClientX) * scale;
+    const dy = (event.clientY - drag.startClientY) * scale;
+    const s = drag.startRect;
+    let next: TileRect;
+    if (drag.mode === "move") {
+      next = {
+        ...s,
+        x: Math.max(0, Math.min(s.x + dx, timeline.outputWidth - s.width)),
+        y: Math.max(0, Math.min(s.y + dy, timeline.outputHeight - s.height)),
+      };
+    } else {
+      const data = tlEntries();
+      const entry = data?.tracks[drag.trackIndex]?.items.find((e) => e.item.id === drag.itemId);
+      const aspect = entry ? clipCropAspect(entry.clip) : 16 / 9;
+      let width = Math.max(32, Math.min(s.width + dx, timeline.outputWidth - s.x));
+      let height = width / aspect;
+      if (s.y + height > timeline.outputHeight) {
+        height = Math.max(16, timeline.outputHeight - s.y);
+        width = height * aspect;
+      }
+      next = { ...s, width, height };
+    }
+    updateTlItem(drag.trackIndex, drag.itemId, { rect: next });
+  };
+
+  const endTlTileDrag = () => {
+    tlTileDragRef.current = null;
   };
 
   const beginTileDrag = (event: React.PointerEvent, tileId: string, mode: "move" | "resize") => {
@@ -991,7 +1563,50 @@ export default function App() {
       let blob: Blob;
       let suggested: string;
       let pickerType: { description: string; accept: Record<string, string[]> };
-      if (exportFormat === "gif" && !compositing) {
+      const tlData = timeline ? layoutTimeline(timeline, clips) : null;
+      const tlExportReady =
+        timelineActive &&
+        timeline !== null &&
+        tlData !== null &&
+        tlData.tracks.some((t) => t.items.length > 0) &&
+        timeline.outputWidth > 0;
+      if (tlExportReady && timeline && tlData) {
+        const baseSpecs = tlData.tracks[0].items.map((entry) => ({
+          input: entry.clip.input,
+          trim: entry.clip.trim,
+          crop: evenRect(entry.clip.crop, entry.clip.meta.width, entry.clip.meta.height),
+        }));
+        const overlaySpecs = [];
+        for (let ti = 1; ti < tlData.tracks.length; ti++) {
+          for (const entry of tlData.tracks[ti].items) {
+            if (!entry.item.rect) continue;
+            overlaySpecs.push({
+              input: entry.clip.input,
+              trim: entry.clip.trim,
+              crop: evenRect(entry.clip.crop, entry.clip.meta.width, entry.clip.meta.height),
+              startSec: entry.startSec,
+              rect: entry.item.rect,
+            });
+          }
+        }
+        const res = await exportTimeline({
+          base: baseSpecs,
+          overlays: overlaySpecs,
+          outputWidth: timeline.outputWidth,
+          outputHeight: timeline.outputHeight,
+          onProgress: (value) => setProgress(value),
+          isCancelled: () => cancelRef.current,
+        });
+        blob = res.blob;
+        setUsedCodec(
+          `${res.codecLabel} · timeline ${timeline.outputWidth} × ${timeline.outputHeight} · ${timeline.tracks.length} track${timeline.tracks.length === 1 ? "" : "s"} · ${fmtSec(res.outputDurationSec)}`,
+        );
+        setAudioCopied(res.audioCopied);
+        setResultFormat("mp4");
+        setResultTimeline(true);
+        suggested = `${clip.file.name.replace(/\.mp4$/i, "")}-timeline.mp4`;
+        pickerType = { description: "MP4 video", accept: { "video/mp4": [".mp4"] } };
+      } else if (exportFormat === "gif" && !compositing) {
         const res = await exportGif({
           input: clip.input,
           crop: out,
@@ -1004,6 +1619,7 @@ export default function App() {
         blob = res.blob;
         setUsedCodec(`GIF ${res.width} × ${res.height} · ${res.frameCount} frames · looping`);
         setResultFormat("gif");
+        setResultTimeline(false);
         suggested = `${clip.file.name.replace(/\.mp4$/i, "")}-loop.gif`;
         pickerType = { description: "GIF image", accept: { "image/gif": [".gif"] } };
       } else if (compositing && layout) {
@@ -1043,6 +1659,7 @@ export default function App() {
         setUsedCodec(`${res.codecLabel} · composite ${layout.outputWidth} × ${layout.outputHeight} · ${layout.tiles.length} tiles`);
         setAudioCopied(res.audioCopied);
         setResultFormat("mp4");
+        setResultTimeline(false);
         suggested = `${clip.file.name.replace(/\.mp4$/i, "")}-edited.mp4`;
         pickerType = { description: "MP4 video", accept: { "video/mp4": [".mp4"] } };
       } else {
@@ -1057,6 +1674,7 @@ export default function App() {
         setUsedCodec(res.codecLabel);
         setAudioCopied(res.audioCopied);
         setResultFormat("mp4");
+        setResultTimeline(false);
         suggested = `${clip.file.name.replace(/\.mp4$/i, "")}-edited.mp4`;
         pickerType = { description: "MP4 video", accept: { "video/mp4": [".mp4"] } };
       }
@@ -1125,17 +1743,21 @@ export default function App() {
   const audioSourceName = layout?.audioSourceClipId
     ? (clips.find((c) => c.id === layout.audioSourceClipId)?.file.name ?? null)
     : null;
-  const resultAudioText = compositing
+  const resultAudioText = resultTimeline
     ? audioCopied
-      ? "Audio copied without re-encoding"
-      : !audioSourceName
-        ? "No audio track (source: None)"
-        : "Audio could not be copied"
-    : clip && clip.meta.hasAudio
+      ? "Audio copied without re-encoding (base track)"
+      : "No audio track"
+    : compositing
       ? audioCopied
         ? "Audio copied without re-encoding"
-        : "Audio could not be copied"
-      : "No audio track";
+        : !audioSourceName
+          ? "No audio track (source: None)"
+          : "Audio could not be copied"
+      : clip && clip.meta.hasAudio
+        ? audioCopied
+          ? "Audio copied without re-encoding"
+          : "Audio could not be copied"
+        : "No audio track";
   const isLargeCanvas =
     layout !== null && (layout.outputWidth > 3840 || layout.outputWidth * layout.outputHeight > 8_300_000);
   const isFullFrame =
@@ -1144,6 +1766,113 @@ export default function App() {
     Math.round(clip.crop.y) === 0 &&
     Math.round(clip.crop.width) === clip.meta.width &&
     Math.round(clip.crop.height) === clip.meta.height;
+  const tlLayout = timeline ? layoutTimeline(timeline, clips) : null;
+  const tlTotalSec = tlLayout?.totalSec ?? 0;
+  const timelineExporting =
+    timelineActive &&
+    timeline !== null &&
+    tlLayout !== null &&
+    tlLayout.tracks.some((t) => t.items.length > 0) &&
+    timeline.outputWidth > 0;
+  const activeBaseEntry = (() => {
+    if (!tlLayout || tlLayout.tracks.length === 0) return null;
+    const baseItems = tlLayout.tracks[0].items;
+    const found = baseItems.find((e) => tlPlayheadSec >= e.startSec && tlPlayheadSec < e.startSec + e.durationSec);
+    if (found) return found;
+    if (baseItems.length > 0 && tlPlayheadSec >= tlLayout.baseEndSec) return baseItems[baseItems.length - 1];
+    return null;
+  })();
+  const activeBaseId = activeBaseEntry?.item.id ?? null;
+  const selectedTl = (() => {
+    if (!tlLayout || !selectedTlItemId) return null;
+    for (let ti = 0; ti < tlLayout.tracks.length; ti++) {
+      const found = tlLayout.tracks[ti].items.find((e) => e.item.id === selectedTlItemId);
+      if (found) return { entry: found, trackIndex: ti };
+    }
+    return null;
+  })();
+  const isLargeTlCanvas =
+    timeline !== null && timeline.outputWidth > 0 && (timeline.outputWidth > 3840 || timeline.outputWidth * timeline.outputHeight > 8_300_000);
+  const tlPct = (rect: TileRect): React.CSSProperties =>
+    timeline
+      ? {
+          left: `${(rect.x / timeline.outputWidth) * 100}%`,
+          top: `${(rect.y / timeline.outputHeight) * 100}%`,
+          width: `${(rect.width / timeline.outputWidth) * 100}%`,
+          height: `${(rect.height / timeline.outputHeight) * 100}%`,
+        }
+      : {};
+
+  useEffect(() => {
+    if (!timelineActive || !activeBaseId) return;
+    const data = tlEntries();
+    if (!data) return;
+    const entry = data.tracks[0]?.items.find((e) => e.item.id === activeBaseId);
+    if (!entry) return;
+    const el = tlVideoRefs.current.get(activeBaseId);
+    if (!el) return;
+    const global = tlGlobalRef.current;
+    const target =
+      entry.clip.trim.startSec + Math.max(0, Math.min(entry.durationSec, global - entry.startSec));
+    const apply = () => {
+      if (Math.abs(el.currentTime - target) > 0.05) el.currentTime = target;
+      if (tlPlayingRef.current) void el.play().catch(() => undefined);
+    };
+    if (el.readyState >= 1) apply();
+    else el.addEventListener("loadedmetadata", apply, { once: true });
+  }, [timelineActive, activeBaseId, tlEntries]);
+
+  useEffect(() => {
+    if (!timelineActive || !activeBaseId) return;
+    const el = tlVideoRefs.current.get(activeBaseId);
+    if (!el) return;
+    const onTime = () => {
+      const data = tlEntries();
+      if (!data) return;
+      const entry = data.tracks[0]?.items.find((e) => e.item.id === activeBaseId);
+      if (!entry) return;
+      const global = entry.startSec + Math.max(0, el.currentTime - entry.clip.trim.startSec);
+      tlGlobalRef.current = global;
+      setTlPlayheadSec(global);
+      syncTlVideos(global, tlPlayingRef.current);
+      const isLastBase = data.tracks[0].items[data.tracks[0].items.length - 1]?.item.id === activeBaseId;
+      if (isLastBase && el.currentTime >= entry.clip.trim.endSec - 0.02 && tlPlayingRef.current) {
+        el.pause();
+        if (data.totalSec > global + 0.05) {
+          startTlClock();
+        } else {
+          tlPlayingRef.current = false;
+          setTlPlaying(false);
+          syncTlVideos(global, false);
+        }
+      }
+    };
+    const onEnded = () => {
+      const data = tlEntries();
+      if (!data) return;
+      const entry = data.tracks[0]?.items.find((e) => e.item.id === activeBaseId);
+      if (!entry) return;
+      const global = entry.startSec + entry.durationSec;
+      tlGlobalRef.current = global;
+      setTlPlayheadSec(global);
+      syncTlVideos(global, tlPlayingRef.current);
+      const isLastBase = data.tracks[0].items[data.tracks[0].items.length - 1]?.item.id === activeBaseId;
+      if (isLastBase && tlPlayingRef.current) {
+        if (data.totalSec > global + 0.05) {
+          startTlClock();
+        } else {
+          tlPlayingRef.current = false;
+          setTlPlaying(false);
+        }
+      }
+    };
+    el.addEventListener("timeupdate", onTime);
+    el.addEventListener("ended", onEnded);
+    return () => {
+      el.removeEventListener("timeupdate", onTime);
+      el.removeEventListener("ended", onEnded);
+    };
+  }, [timelineActive, activeBaseId, tlEntries, syncTlVideos, startTlClock]);
 
   return (
     <Theme theme={ttsTheme} mode="dark">
@@ -1306,6 +2035,13 @@ export default function App() {
                       onClick={() => toggleTool("trim")}
                       isDisabled={exporting}
                     />
+                    <Button
+                      label="Timeline"
+                      variant={timelineActive ? "primary" : "secondary"}
+                      aria-pressed={timelineActive}
+                      onClick={() => toggleTool("timeline")}
+                      isDisabled={exporting}
+                    />
                     {layout && (
                       <Button
                         label="Layout"
@@ -1324,16 +2060,18 @@ export default function App() {
                       ))}
                     </SegmentedControl>
                     <Text type="supporting">
-                      {layout
-                        ? `Output: ${layout.outputWidth} × ${layout.outputHeight}`
-                        : `Output: ${outRect.width} × ${outRect.height}`}
+                      {timelineActive && timeline && timeline.outputWidth > 0
+                        ? `Output: ${timeline.outputWidth} × ${timeline.outputHeight}`
+                        : layout
+                          ? `Output: ${layout.outputWidth} × ${layout.outputHeight}`
+                          : `Output: ${outRect.width} × ${outRect.height}`}
                     </Text>
                     <div className="toolbar-spacer" />
                     <SegmentedControl
                       label="Export format"
-                      value={compositing ? "mp4" : exportFormat}
+                      value={compositing || timelineExporting ? "mp4" : exportFormat}
                       onChange={(value) => {
-                        if (compositing) {
+                        if (compositing || timelineExporting) {
                           setExportFormat("mp4");
                           return;
                         }
@@ -1342,9 +2080,10 @@ export default function App() {
                       isDisabled={exporting}
                     >
                       <SegmentedControlItem value="mp4" label="MP4" />
-                      <SegmentedControlItem value="gif" label="GIF" isDisabled={compositing} />
+                      <SegmentedControlItem value="gif" label="GIF" isDisabled={compositing || timelineExporting} />
                     </SegmentedControl>
                     {compositing && <Text type="supporting">Composite: MP4 only</Text>}
+                    {timelineExporting && !compositing && <Text type="supporting">Timeline: MP4 only</Text>}
                     {exporting ? (
                       <Button
                         label="Cancel"
@@ -1355,14 +2094,14 @@ export default function App() {
                       />
                     ) : (
                       <Button
-                        label={!compositing && exportFormat === "gif" ? "Export GIF" : "Export MP4"}
+                        label={!compositing && !timelineExporting && exportFormat === "gif" ? "Export GIF" : "Export MP4"}
                         variant="primary"
                         onClick={() => void runExport()}
                         isDisabled={!supported}
                       />
                     )}
                   </div>
-                  {exportFormat === "gif" && !compositing && (
+                  {exportFormat === "gif" && !compositing && !timelineExporting && (
                     <div className="gif-settings">
                       <Text type="supporting">Width</Text>
                       <SegmentedControl label="GIF width" value={gifWidth} onChange={setGifWidth} isDisabled={exporting}>
@@ -1404,7 +2143,91 @@ export default function App() {
                   onDragLeave={() => setStageDragOver(false)}
                   onDrop={onStageDrop}
                 >
-                  {layoutActive && layout ? (
+                  {timelineActive && timeline && timeline.outputWidth > 0 && tlLayout ? (
+                    <div className="layout-wrap">
+                      <div
+                        className="layout-stage"
+                        ref={tlStageRef}
+                        style={{ aspectRatio: `${timeline.outputWidth} / ${timeline.outputHeight}` }}
+                      >
+                        {activeBaseEntry && (
+                          <div className="tl-base-video" key={activeBaseEntry.item.id}>
+                            <video
+                              ref={(el) => {
+                                if (el) tlVideoRefs.current.set(activeBaseEntry.item.id, el);
+                                else tlVideoRefs.current.delete(activeBaseEntry.item.id);
+                              }}
+                              src={activeBaseEntry.clip.url}
+                              playsInline
+                            />
+                          </div>
+                        )}
+                        {tlLayout.tracks.slice(1).flatMap((trackLayout, ti) =>
+                          trackLayout.items.map((entry, ii) => {
+                            if (!entry.item.rect) return null;
+                            const trackIndex = ti + 1;
+                            const isActive =
+                              tlPlayheadSec >= entry.startSec && tlPlayheadSec < entry.startSec + entry.durationSec;
+                            const isSelected = entry.item.id === selectedTlItemId;
+                            return (
+                              <div
+                                key={entry.item.id}
+                                className={`layout-tile tl-overlay-tile${isSelected ? " selected" : ""}`}
+                                data-tl-stage-item={entry.item.id}
+                                style={{
+                                  ...tlPct(entry.item.rect),
+                                  visibility: isActive ? "visible" : "hidden",
+                                  zIndex: trackIndex * 100 + ii,
+                                }}
+                                onPointerDown={(e) => {
+                                  if (exporting) return;
+                                  if (isSelected) {
+                                    beginTlTileDrag(e, trackIndex, entry, "move");
+                                  } else {
+                                    setSelectedTlItemId(entry.item.id);
+                                  }
+                                }}
+                                onPointerMove={onTlTileDragMove}
+                                onPointerUp={endTlTileDrag}
+                                onPointerCancel={endTlTileDrag}
+                              >
+                                <video
+                                  ref={(el) => {
+                                    if (el) tlVideoRefs.current.set(entry.item.id, el);
+                                    else tlVideoRefs.current.delete(entry.item.id);
+                                  }}
+                                  src={entry.clip.url}
+                                  playsInline
+                                  muted
+                                />
+                                {isSelected && (
+                                  <div
+                                    className="layout-tile-handle"
+                                    onPointerDown={(e) => beginTlTileDrag(e, trackIndex, entry, "resize")}
+                                    onPointerMove={onTlTileDragMove}
+                                    onPointerUp={endTlTileDrag}
+                                    onPointerCancel={endTlTileDrag}
+                                  />
+                                )}
+                              </div>
+                            );
+                          }),
+                        )}
+                      </div>
+                      <div className="layout-controls">
+                        <Button
+                          label={tlPlaying ? "Pause all" : "Play all"}
+                          variant="primary"
+                          onClick={toggleTlPlayback}
+                          isDisabled={exporting || tlTotalSec <= 0}
+                        />
+                        <Text type="supporting">
+                          {fmtSec(tlPlayheadSec)} / {fmtSec(tlTotalSec)} · Output {timeline.outputWidth} ×{" "}
+                          {timeline.outputHeight} · {timeline.tracks.length} track{timeline.tracks.length === 1 ? "" : "s"}
+                        </Text>
+                      </div>
+                    </div>
+                  ) : layoutActive && layout ? (
                     <div className="layout-wrap">
                       <div
                         className="layout-stage"
@@ -1491,6 +2314,163 @@ export default function App() {
                   </div>
                   )}
                 </div>
+                {timelineActive && timeline && tlLayout && (
+                  <div className="tl-strip">
+                    {tlLayout.tracks
+                      .slice()
+                      .reverse()
+                      .map((trackLayout) => {
+                        const trackIndex = tlLayout.tracks.findIndex((t) => t.track.id === trackLayout.track.id);
+                        return (
+                          <div className="tl-row" key={trackLayout.track.id}>
+                            <div className="tl-row-label">{trackIndex === 0 ? "V1 · Base" : `V${trackIndex + 1}`}</div>
+                            <div
+                              className="tl-row-track"
+                              data-tl-row={trackIndex}
+                              onPointerDown={(e) => {
+                                if (exporting || tlTotalSec <= 0) return;
+                                const rect = e.currentTarget.getBoundingClientRect();
+                                if (rect.width === 0) return;
+                                seekTlTo(((e.clientX - rect.left) / rect.width) * tlTotalSec);
+                              }}
+                              onDragOver={(e) => {
+                                const types = Array.from(e.dataTransfer.types);
+                                if (types.includes(POOL_DRAG_TYPE) || (trackIndex === 0 && types.includes(TL_ITEM_DRAG_TYPE))) {
+                                  e.preventDefault();
+                                  e.dataTransfer.dropEffect = types.includes(POOL_DRAG_TYPE) ? "copy" : "move";
+                                }
+                              }}
+                              onDrop={(e) => {
+                                const types = Array.from(e.dataTransfer.types);
+                                const rowEl = e.currentTarget;
+                                if (trackIndex === 0 && types.includes(TL_ITEM_DRAG_TYPE)) {
+                                  const itemId = e.dataTransfer.getData(TL_ITEM_DRAG_TYPE);
+                                  if (!itemId) return;
+                                  e.preventDefault();
+                                  reorderBaseItem(itemId, baseInsertIndex(rowEl, e.clientX));
+                                  return;
+                                }
+                                if (types.includes(POOL_DRAG_TYPE)) {
+                                  const droppedClipId =
+                                    e.dataTransfer.getData(POOL_DRAG_TYPE) || e.dataTransfer.getData("text/plain");
+                                  if (!droppedClipId || !clipsRef.current.some((c) => c.id === droppedClipId)) return;
+                                  e.preventDefault();
+                                  if (trackIndex === 0) {
+                                    addClipToBase(droppedClipId, baseInsertIndex(rowEl, e.clientX));
+                                  } else {
+                                    const rect = rowEl.getBoundingClientRect();
+                                    const frac =
+                                      rect.width > 0 ? Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width)) : 0;
+                                    addClipToOverlay(droppedClipId, trackIndex, frac * tlTotalSec);
+                                  }
+                                }
+                              }}
+                            >
+                              {trackIndex === 0 &&
+                                trackLayout.items.map((entry) => (
+                                  <div
+                                    key={entry.item.id}
+                                    className="tl-block"
+                                    data-tl-block={entry.item.id}
+                                    data-tl-item={entry.item.id}
+                                    style={{ flexGrow: Math.max(entry.durationSec, 0.1), flexBasis: 0 }}
+                                    draggable={!exporting}
+                                    onDragStart={(e) => {
+                                      e.dataTransfer.setData(TL_ITEM_DRAG_TYPE, entry.item.id);
+                                      e.dataTransfer.effectAllowed = "move";
+                                    }}
+                                  >
+                                    <div className="tl-thumbs">
+                                      {(
+                                        tlThumbs[`${entry.clip.id}|${entry.clip.trim.startSec}|${entry.clip.trim.endSec}`] ??
+                                        []
+                                      ).map((src, i) => (
+                                        <img key={i} src={src} alt="" draggable={false} />
+                                      ))}
+                                    </div>
+                                    <div className="tl-block-label">
+                                      {entry.clip.file.name} · {fmtSec(entry.durationSec)}
+                                    </div>
+                                    <button
+                                      type="button"
+                                      className="tl-block-remove"
+                                      aria-label="Remove from timeline"
+                                      onPointerDown={(e) => e.stopPropagation()}
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        removeTlItem(0, entry.item.id);
+                                      }}
+                                    >
+                                      ×
+                                    </button>
+                                  </div>
+                                ))}
+                              {trackIndex > 0 &&
+                                trackLayout.items.map((entry) => {
+                                  const isSelected = entry.item.id === selectedTlItemId;
+                                  return (
+                                    <div
+                                      key={entry.item.id}
+                                      className={`tl-block tl-block-overlay${isSelected ? " selected" : ""}`}
+                                      data-tl-block={entry.item.id}
+                                      data-tl-item={entry.item.id}
+                                      style={{
+                                        left: `${tlTotalSec > 0 ? (entry.startSec / tlTotalSec) * 100 : 0}%`,
+                                        width: `${tlTotalSec > 0 ? (entry.durationSec / tlTotalSec) * 100 : 0}%`,
+                                      }}
+                                      onPointerDown={(e) => beginTlBlockDrag(e, trackIndex, entry)}
+                                      onPointerMove={onTlBlockDragMove}
+                                      onPointerUp={endTlBlockDrag}
+                                      onPointerCancel={endTlBlockDrag}
+                                    >
+                                      <div className="tl-thumbs">
+                                        {(
+                                          tlThumbs[
+                                            `${entry.clip.id}|${entry.clip.trim.startSec}|${entry.clip.trim.endSec}`
+                                          ] ?? []
+                                        ).map((src, i) => (
+                                          <img key={i} src={src} alt="" draggable={false} />
+                                        ))}
+                                      </div>
+                                      <div className="tl-block-label">
+                                        {entry.clip.file.name} · {fmtSec(entry.durationSec)}
+                                      </div>
+                                      <button
+                                        type="button"
+                                        className="tl-block-remove"
+                                        aria-label="Remove from timeline"
+                                        onPointerDown={(e) => e.stopPropagation()}
+                                        onClick={(e) => {
+                                          e.stopPropagation();
+                                          removeTlItem(trackIndex, entry.item.id);
+                                        }}
+                                      >
+                                        ×
+                                      </button>
+                                    </div>
+                                  );
+                                })}
+                              {trackLayout.items.length === 0 && (
+                                <div className="tl-row-empty">
+                                  {trackIndex === 0
+                                    ? "Drop videos here, or use Add to timeline in the panel."
+                                    : "Drop videos here to overlay them."}
+                                </div>
+                              )}
+                              <div
+                                className="tl-playhead"
+                                style={{ left: `${tlTotalSec > 0 ? (tlPlayheadSec / tlTotalSec) * 100 : 0}%` }}
+                              />
+                            </div>
+                          </div>
+                        );
+                      })}
+                    <Text type="supporting">
+                      {fmtSec(tlPlayheadSec)} / {fmtSec(tlTotalSec)} · Click a track to seek. Drag base clips to
+                      reorder them; drag overlay clips sideways to move them in time.
+                    </Text>
+                  </div>
+                )}
                 {trimActive && (
                   <div className="trim-timeline">
                     <div
@@ -1758,6 +2738,201 @@ export default function App() {
                       </Text>
                     </>
                   )}
+                  {timelineActive && timeline && tlLayout && (
+                    <>
+                      <HStack gap={3} vAlign="center">
+                        <Button
+                          label="Add to timeline"
+                          variant="primary"
+                          onClick={() => clip && addClipToBase(clip.id)}
+                          isDisabled={exporting || !clip}
+                        />
+                        <Button label="Add track" variant="secondary" onClick={addTrack} isDisabled={exporting} />
+                      </HStack>
+                      <Text type="supporting">
+                        Total duration: {fmtSec(tlTotalSec)} · {timeline.tracks.length} track
+                        {timeline.tracks.length === 1 ? "" : "s"} · Export MP4 in Timeline mode exports the whole
+                        timeline. Audio comes from the base track only; overlay clips are silent.
+                      </Text>
+                      <div className="field-row">
+                        <div className="field">
+                          <label htmlFor="timeline-output-width">Output width</label>
+                          <input
+                            id="timeline-output-width"
+                            type="number"
+                            min={16}
+                            max={7680}
+                            step={2}
+                            value={tlOutWText}
+                            disabled={exporting}
+                            onChange={(e) => setTlOutWText(e.target.value)}
+                            onBlur={(e) => commitTlOutputSize(e)}
+                            onKeyDown={(e) => {
+                              if (e.key === "Enter") (e.target as HTMLInputElement).blur();
+                            }}
+                          />
+                        </div>
+                        <div className="field">
+                          <label htmlFor="timeline-output-height">Output height</label>
+                          <input
+                            id="timeline-output-height"
+                            type="number"
+                            min={16}
+                            max={7680}
+                            step={2}
+                            value={tlOutHText}
+                            disabled={exporting}
+                            onChange={(e) => setTlOutHText(e.target.value)}
+                            onBlur={(e) => commitTlOutputSize(e)}
+                            onKeyDown={(e) => {
+                              if (e.key === "Enter") (e.target as HTMLInputElement).blur();
+                            }}
+                          />
+                        </div>
+                      </div>
+                      <HStack gap={3} vAlign="center">
+                        <Button label="1920 × 1080" variant="secondary" onClick={() => applyTlOutputSize(1920, 1080)} isDisabled={exporting} />
+                        <Button label="1280 × 720" variant="secondary" onClick={() => applyTlOutputSize(1280, 720)} isDisabled={exporting} />
+                        <Button label="854 × 480" variant="secondary" onClick={() => applyTlOutputSize(854, 480)} isDisabled={exporting} />
+                        <Button
+                          label="50%"
+                          variant="secondary"
+                          onClick={() => applyTlOutputSize(timeline.outputWidth / 2, timeline.outputHeight / 2)}
+                          isDisabled={exporting || timeline.outputWidth <= 0}
+                        />
+                        <Button
+                          label="25%"
+                          variant="secondary"
+                          onClick={() => applyTlOutputSize(timeline.outputWidth / 4, timeline.outputHeight / 4)}
+                          isDisabled={exporting || timeline.outputWidth <= 0}
+                        />
+                      </HStack>
+                      {isLargeTlCanvas && (
+                        <Text type="supporting">
+                          <span className="layout-warning">Large canvas: encoding will be heavy and the file big.</span>
+                        </Text>
+                      )}
+                      {tlLayout.tracks.map((trackLayout, trackIndex) => (
+                        <div key={trackLayout.track.id} className="tl-track-group">
+                          <HStack gap={3} vAlign="center">
+                            <Text type="supporting">
+                              {trackIndex === 0 ? "V1 · Base track" : `V${trackIndex + 1} · Overlay track`}
+                            </Text>
+                            {trackIndex > 0 && (
+                              <Button
+                                label="Remove track"
+                                variant="secondary"
+                                onClick={() => removeTrack(trackIndex)}
+                                isDisabled={exporting}
+                              />
+                            )}
+                          </HStack>
+                          <div className="tile-list">
+                            {trackLayout.items.map((entry) => (
+                              <div className="tile-row" key={entry.item.id} data-tl-row-item={entry.item.id}>
+                                <div className="tile-row-main">
+                                  <Text type="supporting">{entry.clip.file.name}</Text>
+                                  <Text type="supporting">
+                                    {trackIndex === 0
+                                      ? `${fmtSec(entry.startSec)} – ${fmtSec(entry.startSec + entry.durationSec)} · ${fmtSec(entry.durationSec)}`
+                                      : `Start ${fmtSec(entry.startSec)} · ${fmtSec(entry.durationSec)}`}
+                                  </Text>
+                                </div>
+                                <HStack gap={2} vAlign="center">
+                                  {trackIndex > 0 && (
+                                    <Button
+                                      label="Select"
+                                      variant={entry.item.id === selectedTlItemId ? "primary" : "secondary"}
+                                      onClick={() => setSelectedTlItemId(entry.item.id)}
+                                      isDisabled={exporting}
+                                    />
+                                  )}
+                                  <Button
+                                    label="Remove"
+                                    variant="secondary"
+                                    onClick={() => removeTlItem(trackIndex, entry.item.id)}
+                                    isDisabled={exporting}
+                                  />
+                                </HStack>
+                              </div>
+                            ))}
+                            {trackLayout.items.length === 0 && (
+                              <Text type="supporting">No clips on this track yet.</Text>
+                            )}
+                          </div>
+                        </div>
+                      ))}
+                      {selectedTl && selectedTl.trackIndex > 0 && selectedTl.entry.item.rect && (
+                        <>
+                          <Text type="supporting">
+                            Selected overlay: {selectedTl.entry.clip.file.name} (V{selectedTl.trackIndex + 1})
+                          </Text>
+                          <div className="field-row">
+                            <div className="field">
+                              <label htmlFor="tl-item-start">Start (s)</label>
+                              <input
+                                id="tl-item-start"
+                                type="number"
+                                min={0}
+                                step={0.1}
+                                value={Math.round(selectedTl.entry.item.startSec * 10) / 10}
+                                disabled={exporting}
+                                onChange={(e) => {
+                                  const value = Number(e.target.value);
+                                  if (Number.isFinite(value)) {
+                                    updateTlItem(selectedTl.trackIndex, selectedTl.entry.item.id, {
+                                      startSec: Math.max(0, value),
+                                    });
+                                  }
+                                }}
+                              />
+                            </div>
+                            {(["x", "y", "width", "height"] as const).map((field) => (
+                              <div className="field" key={field}>
+                                <label htmlFor={`tl-rect-${field}`}>
+                                  {field === "width" ? "Width" : field === "height" ? "Height" : field.toUpperCase()}
+                                </label>
+                                <input
+                                  id={`tl-rect-${field}`}
+                                  type="number"
+                                  min={0}
+                                  value={Math.round(selectedTl.entry.item.rect?.[field] ?? 0)}
+                                  disabled={exporting}
+                                  onChange={(e) => {
+                                    const value = Number(e.target.value);
+                                    const rect = selectedTl.entry.item.rect;
+                                    if (!Number.isFinite(value) || !rect) return;
+                                    const nextRect = { ...rect, [field]: value };
+                                    nextRect.width = Math.max(16, nextRect.width);
+                                    nextRect.height = Math.max(16, nextRect.height);
+                                    nextRect.x = Math.max(0, Math.min(nextRect.x, Math.max(0, timeline.outputWidth - 16)));
+                                    nextRect.y = Math.max(0, Math.min(nextRect.y, Math.max(0, timeline.outputHeight - 16)));
+                                    updateTlItem(selectedTl.trackIndex, selectedTl.entry.item.id, { rect: nextRect });
+                                  }}
+                                />
+                              </div>
+                            ))}
+                          </div>
+                          <HStack gap={3} vAlign="center">
+                            <Button
+                              label="Picture in picture"
+                              variant="secondary"
+                              onClick={() => {
+                                updateTlItem(selectedTl.trackIndex, selectedTl.entry.item.id, {
+                                  rect: pipItemRect(timeline.outputWidth, timeline.outputHeight, clipCropAspect(selectedTl.entry.clip)),
+                                });
+                              }}
+                              isDisabled={exporting}
+                            />
+                          </HStack>
+                          <Text type="supporting">
+                            Drag the selected overlay on the preview to move it, and use the corner handle to resize
+                            it. Its size follows the clip's crop aspect while dragging on the preview.
+                          </Text>
+                        </>
+                      )}
+                    </>
+                  )}
                   {activeTool === "none" && (
                     <>
                       <Text type="supporting">
@@ -1775,6 +2950,13 @@ export default function App() {
                           Layout: {layout.tiles.length} tile{layout.tiles.length === 1 ? "" : "s"} · {layout.outputWidth} ×{" "}
                           {layout.outputHeight} · Audio: {audioSourceName ?? "None"}. Press Layout in the toolbar to edit
                           it, or drag another video from Media onto the canvas.
+                        </Text>
+                      )}
+                      {timeline && tlLayout && tlLayout.tracks.some((t) => t.items.length > 0) && (
+                        <Text type="supporting">
+                          Timeline: {timeline.tracks.length} track{timeline.tracks.length === 1 ? "" : "s"} ·{" "}
+                          {fmtSec(tlTotalSec)} · {timeline.outputWidth} × {timeline.outputHeight}. Press Timeline in the
+                          toolbar to edit it.
                         </Text>
                       )}
                       <Text type="supporting">

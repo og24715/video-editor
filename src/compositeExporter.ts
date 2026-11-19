@@ -15,7 +15,7 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-class FramePump {
+export class FramePump {
   current: VideoFrame | null = null;
   private queue: VideoFrame[] = [];
   private iterator: AsyncIterableIterator<EncodedPacket> | null = null;
@@ -146,7 +146,7 @@ export interface CompositeExportResult {
   outputDurationSec: number;
 }
 
-function clampRange(trim: TrimRange, durationSec: number): TrimRange {
+export function clampRange(trim: TrimRange, durationSec: number): TrimRange {
   const start = Math.max(0, Math.min(trim.startSec, Math.max(0, durationSec - 0.1)));
   const end = Math.max(start + 0.1, Math.min(trim.endSec, durationSec > 0 ? durationSec : trim.endSec));
   return { startSec: start, endSec: end };

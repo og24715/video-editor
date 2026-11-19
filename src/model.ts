@@ -33,7 +33,7 @@ export interface Clip {
 
 export type AspectPreset = "free" | "16:9" | "9:16" | "1:1" | "4:3";
 
-export type ToolId = "crop" | "trim" | "layout";
+export type ToolId = "crop" | "trim" | "layout" | "timeline";
 
 export type ActiveTool = "none" | ToolId;
 
@@ -66,6 +66,51 @@ export interface LayoutState {
   outputHeight: number;
   tiles: LayoutTile[];
   audioSourceClipId: string | null;
+}
+
+export interface TimelineItem {
+  id: string;
+  clipId: string;
+  startSec: number;
+  rect: TileRect | null;
+}
+
+export interface TimelineTrack {
+  id: string;
+  items: TimelineItem[];
+}
+
+export interface TimelineState {
+  outputWidth: number;
+  outputHeight: number;
+  tracks: TimelineTrack[];
+}
+
+export function pipItemRect(outputWidth: number, outputHeight: number, aspect: number): TileRect {
+  const safeAspect = aspect > 0 ? aspect : 16 / 9;
+  let width = evenDown(outputWidth * 0.3);
+  let height = Math.round(width / safeAspect);
+  if (height > outputHeight - 32) {
+    height = Math.max(16, outputHeight - 32);
+    width = Math.round(height * safeAspect);
+  }
+  if (width > outputWidth) {
+    width = outputWidth;
+    height = Math.round(width / safeAspect);
+  }
+  const x = Math.max(0, outputWidth - width - 16);
+  const y = Math.max(0, outputHeight - height - 16);
+  return { x, y, width, height };
+}
+
+export function containRect(sourceWidth: number, sourceHeight: number, outputWidth: number, outputHeight: number): TileRect {
+  if (!(sourceWidth > 0) || !(sourceHeight > 0)) {
+    return { x: 0, y: 0, width: outputWidth, height: outputHeight };
+  }
+  const scale = Math.min(outputWidth / sourceWidth, outputHeight / sourceHeight);
+  const width = Math.round(sourceWidth * scale);
+  const height = Math.round(sourceHeight * scale);
+  return { x: Math.round((outputWidth - width) / 2), y: Math.round((outputHeight - height) / 2), width, height };
 }
 
 export interface PairRects {
