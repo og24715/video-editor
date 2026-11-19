@@ -112,6 +112,10 @@ function fmtSec(sec: number): string {
   return `${(Math.round(sec * 10) / 10).toFixed(1)}s`;
 }
 
+function clampTimeToTrim(t: number, trim: TrimRange): number {
+  return Math.max(trim.startSec, Math.min(trim.endSec, t));
+}
+
 function fmtSize(bytes: number): string {
   if (bytes >= 1_000_000) return `${(bytes / 1_000_000).toFixed(1)} MB`;
   if (bytes >= 1_000) return `${(bytes / 1_000).toFixed(1)} KB`;
@@ -151,6 +155,9 @@ export default function App() {
   const trimActive = activeTool === "trim";
   const trimRef = useRef<TrimRange>({ startSec: 0, endSec: 0 });
   const durationRef = useRef(0);
+  const toolRef = useRef<ActiveTool>("none");
+  const seekClampRef = useRef(false);
+  toolRef.current = activeTool;
   if (clip) {
     trimRef.current = clip.trim;
     durationRef.current = clip.meta.durationSec;
@@ -169,6 +176,17 @@ export default function App() {
     },
     [],
   );
+
+  const clampPlayheadToTrim = useCallback(() => {
+    const video = videoRef.current;
+    if (!video) return;
+    const clamped = clampTimeToTrim(video.currentTime, trimRef.current);
+    if (Math.abs(clamped - video.currentTime) > 0.001) {
+      seekClampRef.current = true;
+      video.currentTime = clamped;
+      setPlayheadSec(clamped);
+    }
+  }, []);
 
   const loadFile = useCallback(async (file: File) => {
     setError(null);
@@ -222,22 +240,73 @@ export default function App() {
   useEffect(() => {
     const video = videoRef.current;
     if (!video) return;
+    const enforceTrimRange = () => {
+      if (toolRef.current !== "trim") return;
+      const clamped = clampTimeToTrim(video.currentTime, trimRef.current);
+      if (Math.abs(clamped - video.currentTime) > 0.001) {
+        seekClampRef.current = true;
+        video.currentTime = clamped;
+        setPlayheadSec(clamped);
+      }
+    };
     const onTimeUpdate = () => {
       setPlayheadSec(video.currentTime);
       const trim = trimRef.current;
       const duration = durationRef.current;
+      if (toolRef.current === "trim") {
+        if (video.currentTime < trim.startSec - 0.001) {
+          enforceTrimRange();
+          return;
+        }
+        if (video.currentTime >= trim.endSec) {
+          video.pause();
+          if (video.currentTime > trim.endSec) {
+            seekClampRef.current = true;
+            video.currentTime = trim.endSec;
+            setPlayheadSec(trim.endSec);
+          }
+          return;
+        }
+      }
       if (duration > 0 && trim.endSec < duration - 0.01 && video.currentTime >= trim.endSec) {
         video.pause();
       }
     };
-    const onSeeked = () => setPlayheadSec(video.currentTime);
+    const onSeeking = () => {
+      if (seekClampRef.current) {
+        seekClampRef.current = false;
+        return;
+      }
+      enforceTrimRange();
+    };
+    const onSeeked = () => {
+      enforceTrimRange();
+      setPlayheadSec(video.currentTime);
+    };
+    const onPlay = () => {
+      if (toolRef.current !== "trim") return;
+      const trim = trimRef.current;
+      if (video.currentTime < trim.startSec - 0.001 || video.currentTime >= trim.endSec - 0.001) {
+        seekClampRef.current = true;
+        video.currentTime = trim.startSec;
+        setPlayheadSec(trim.startSec);
+      }
+    };
     video.addEventListener("timeupdate", onTimeUpdate);
+    video.addEventListener("seeking", onSeeking);
     video.addEventListener("seeked", onSeeked);
+    video.addEventListener("play", onPlay);
     return () => {
       video.removeEventListener("timeupdate", onTimeUpdate);
+      video.removeEventListener("seeking", onSeeking);
       video.removeEventListener("seeked", onSeeked);
+      video.removeEventListener("play", onPlay);
     };
   }, [clip?.id]);
+
+  useEffect(() => {
+    if (trimActive) clampPlayheadToTrim();
+  }, [trimActive, clip?.trim, clampPlayheadToTrim]);
 
   useEffect(() => {
     if (!trimActive || !clip) return;
@@ -360,7 +429,9 @@ export default function App() {
 
   const toggleTool = (tool: ToolId) => {
     if (tool === "crop") videoRef.current?.pause();
-    setActiveTool((prev) => (prev === tool ? "none" : tool));
+    const next: ActiveTool = activeTool === tool ? "none" : tool;
+    setActiveTool(next);
+    if (next === "trim") clampPlayheadToTrim();
   };
 
   const confirmCrop = () => {
@@ -443,8 +514,10 @@ export default function App() {
     if (frac === null) return;
     const video = videoRef.current;
     if (!video) return;
-    video.currentTime = frac * clip.meta.durationSec;
-    setPlayheadSec(video.currentTime);
+    let target = frac * clip.meta.durationSec;
+    if (trimActive) target = clampTimeToTrim(target, clip.trim);
+    video.currentTime = target;
+    setPlayheadSec(target);
   };
 
   const onTimelinePointerDown = (event: React.PointerEvent) => {
@@ -780,29 +853,28 @@ export default function App() {
                     <Text type="supporting">Video codec: {clip.meta.videoCodec ?? "unknown"}</Text>
                     <Text type="supporting">Audio: {clip.meta.hasAudio ? (clip.meta.audioCodec ?? "yes") : "none"}</Text>
                   </div>
-                  <div className="field-row">
-                    {(["x", "y", "width", "height"] as const).map((field) => (
-                      <div className="field" key={field}>
-                        <label htmlFor={`crop-${field}`}>{field === "width" ? "Width" : field === "height" ? "Height" : field.toUpperCase()}</label>
-                        <input
-                          id={`crop-${field}`}
-                          type="number"
-                          min={0}
-                          disabled={!cropActive}
-                          value={Math.round(clip.crop[field])}
-                          onChange={(e) => updateField(field, e.target.value)}
-                        />
+                  {cropActive && (
+                    <>
+                      <div className="field-row">
+                        {(["x", "y", "width", "height"] as const).map((field) => (
+                          <div className="field" key={field}>
+                            <label htmlFor={`crop-${field}`}>{field === "width" ? "Width" : field === "height" ? "Height" : field.toUpperCase()}</label>
+                            <input
+                              id={`crop-${field}`}
+                              type="number"
+                              min={0}
+                              value={Math.round(clip.crop[field])}
+                              onChange={(e) => updateField(field, e.target.value)}
+                            />
+                          </div>
+                        ))}
                       </div>
-                    ))}
-                  </div>
-                  <Text type="supporting">
-                    {cropActive
-                      ? "Editing crop. Drag the frame or use the fields above, then Confirm crop when done. Output size is adjusted to even numbers."
-                      : isFullFrame
-                        ? "Crop: full frame. Press Crop in the toolbar to edit it. Output size is adjusted to even numbers."
-                        : `Crop: ${Math.round(clip.crop.x)}, ${Math.round(clip.crop.y)} · ${outRect.width} × ${outRect.height}. Press Crop in the toolbar to edit it. Output size is adjusted to even numbers.`}
-                  </Text>
-                  {trimActive ? (
+                      <Text type="supporting">
+                        Editing crop. Drag the frame or use the fields above, then Confirm crop when done. Output size is adjusted to even numbers.
+                      </Text>
+                    </>
+                  )}
+                  {trimActive && (
                     <>
                       <div className="field-row">
                         <div className="field">
@@ -839,12 +911,23 @@ export default function App() {
                         Selection: {fmtSec(selectionSec)} of {fmtSec(clip.meta.durationSec)}
                       </Text>
                     </>
-                  ) : (
-                    <Text type="supporting">
-                      {trimIsFull
-                        ? "Trim: full length. Press Trim in the toolbar to edit it."
-                        : `Trim: ${fmtSec(clip.trim.startSec)} – ${fmtSec(clip.trim.endSec)} (${fmtSec(selectionSec)}). Press Trim in the toolbar to edit it.`}
-                    </Text>
+                  )}
+                  {activeTool === "none" && (
+                    <>
+                      <Text type="supporting">
+                        {isFullFrame
+                          ? "Crop: full frame. Press Crop in the toolbar to edit it."
+                          : `Crop: ${Math.round(clip.crop.x)}, ${Math.round(clip.crop.y)} · ${outRect.width} × ${outRect.height}. Press Crop in the toolbar to edit it.`}
+                      </Text>
+                      <Text type="supporting">
+                        {trimIsFull
+                          ? "Trim: full length. Press Trim in the toolbar to edit it."
+                          : `Trim: ${fmtSec(clip.trim.startSec)} – ${fmtSec(clip.trim.endSec)} (${fmtSec(selectionSec)}). Press Trim in the toolbar to edit it.`}
+                      </Text>
+                      <Text type="supporting">
+                        Output: {outRect.width} × {outRect.height} (adjusted to even numbers)
+                      </Text>
+                    </>
                   )}
                   {resultUrl && !exporting && (
                     <VStack gap={2}>
