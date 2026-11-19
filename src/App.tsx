@@ -7,9 +7,8 @@ import { Button } from "@astryxdesign/core/Button";
 import { SegmentedControl, SegmentedControlItem } from "@astryxdesign/core/SegmentedControl";
 import { HStack } from "@astryxdesign/core/HStack";
 import { VStack } from "@astryxdesign/core/VStack";
-import { StackItem } from "@astryxdesign/core/Stack";
 import { Spinner } from "@astryxdesign/core/Spinner";
-import { Clapperboard, FolderOpen } from "lucide-react";
+import { FolderOpen } from "lucide-react";
 import type { ActiveTool, AspectPreset, Clip, CropRect, LayoutState, TileRect, ToolId, TrimRange } from "./model";
 import { evenRect, pipLayout, resizedLayout, sideBySideLayout } from "./model";
 import { ExportCancelledError, exportCropped, openInput, readMeta, webCodecsSupported } from "./exporter";
@@ -1002,15 +1001,6 @@ export default function App() {
   return (
     <Theme theme={ttsTheme} mode="dark">
       <div className="shell">
-        <header className="shell-header">
-          <HStack gap={3} vAlign="center">
-            <Clapperboard size={26} />
-            <StackItem size="fill">
-              <Heading level={2}>Video Editor</Heading>
-            </StackItem>
-            <Text type="supporting">Crop · Trim · Layout · WebCodecs</Text>
-          </HStack>
-        </header>
         <main className="shell-main">
           <VStack gap={6}>
             {!supported && (
