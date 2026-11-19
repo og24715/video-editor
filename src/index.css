@@ -126,16 +126,6 @@ body {
   touch-action: none;
 }
 
-.crop-rect.confirmed {
-  pointer-events: none;
-  cursor: default;
-}
-
-.crop-rect.confirmed .crop-handle {
-  pointer-events: none;
-  cursor: default;
-}
-
 .crop-handle {
   position: absolute;
   width: 16px;

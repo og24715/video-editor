@@ -27,6 +27,10 @@ export interface Clip {
 
 export type AspectPreset = "free" | "16:9" | "9:16" | "1:1" | "4:3";
 
+export type ToolId = "crop";
+
+export type ActiveTool = "none" | ToolId;
+
 export function evenRect(crop: CropRect, maxWidth: number, maxHeight: number): CropRect {
   const x = Math.max(0, Math.min(Math.round(crop.x), maxWidth - 2));
   const y = Math.max(0, Math.min(Math.round(crop.y), maxHeight - 2));

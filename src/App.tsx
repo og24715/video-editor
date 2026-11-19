@@ -10,7 +10,7 @@ import { VStack } from "@astryxdesign/core/VStack";
 import { StackItem } from "@astryxdesign/core/Stack";
 import { Spinner } from "@astryxdesign/core/Spinner";
 import { Clapperboard, FolderOpen } from "lucide-react";
-import type { AspectPreset, Clip, CropRect } from "./model";
+import type { ActiveTool, AspectPreset, Clip, CropRect } from "./model";
 import { evenRect } from "./model";
 import { ExportCancelledError, exportCropped, openInput, readMeta, webCodecsSupported } from "./exporter";
 
@@ -106,7 +106,7 @@ function fmtSize(bytes: number): string {
 export default function App() {
   const [clips, setClips] = useState<Clip[]>([]);
   const [aspect, setAspect] = useState<AspectPreset>("free");
-  const [cropConfirmed, setCropConfirmed] = useState(false);
+  const [activeTool, setActiveTool] = useState<ActiveTool>("none");
   const [dragging, setDragging] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -127,6 +127,7 @@ export default function App() {
 
   const clip = clips[0] ?? null;
   const ratio = ASPECTS.find((a) => a.value === aspect)?.ratio ?? null;
+  const cropActive = activeTool === "crop";
 
   const setCrop = useCallback(
     (crop: CropRect) => {
@@ -138,7 +139,7 @@ export default function App() {
   const loadFile = useCallback(async (file: File) => {
     setError(null);
     setNotice(null);
-    setCropConfirmed(false);
+    setActiveTool("none");
     setResultUrl(null);
     setUsedCodec(null);
     setAudioCopied(null);
@@ -181,7 +182,7 @@ export default function App() {
   }, []);
 
   const beginDrag = (event: React.PointerEvent, mode: "move" | Handle) => {
-    if (!clip || exporting || cropConfirmed) return;
+    if (!clip || exporting || !cropActive) return;
     event.preventDefault();
     event.stopPropagation();
     (event.target as HTMLElement).setPointerCapture(event.pointerId);
@@ -240,13 +241,13 @@ export default function App() {
     dragRef.current = null;
   };
 
-  const confirmCrop = () => {
-    setCropConfirmed(true);
+  const toggleCropTool = () => {
+    videoRef.current?.pause();
+    setActiveTool((prev) => (prev === "crop" ? "none" : "crop"));
   };
 
-  const editCrop = () => {
-    videoRef.current?.pause();
-    setCropConfirmed(false);
+  const confirmCrop = () => {
+    setActiveTool("none");
   };
 
   const openDifferentFile = () => {
@@ -258,13 +259,13 @@ export default function App() {
       return [];
     });
     setResultUrl(null);
-    setCropConfirmed(false);
+    setActiveTool("none");
     setError(null);
     setNotice(null);
   };
 
   const changeAspect = (value: string) => {
-    if (cropConfirmed) return;
+    if (!cropActive) return;
     const preset = (ASPECTS.find((a) => a.value === value)?.value ?? "free") as AspectPreset;
     setAspect(preset);
     if (!clip) return;
@@ -283,7 +284,7 @@ export default function App() {
   };
 
   const updateField = (field: keyof CropRect, raw: string) => {
-    if (!clip || cropConfirmed) return;
+    if (!clip || !cropActive) return;
     const value = Number(raw);
     if (!Number.isFinite(value)) return;
     setCrop(clampCrop({ ...clip.crop, [field]: value }, clip.meta.width, clip.meta.height, ratio));
@@ -356,6 +357,12 @@ export default function App() {
   };
 
   const outRect = clip ? evenRect(clip.crop, clip.meta.width, clip.meta.height) : null;
+  const isFullFrame =
+    clip !== null &&
+    Math.round(clip.crop.x) === 0 &&
+    Math.round(clip.crop.y) === 0 &&
+    Math.round(clip.crop.width) === clip.meta.width &&
+    Math.round(clip.crop.height) === clip.meta.height;
 
   return (
     <Theme theme={ttsTheme} mode="dark">
@@ -426,12 +433,17 @@ export default function App() {
                 <div className="toolbar-sticky">
                   <div className="toolbar">
                     <Button label="Open a different file" variant="secondary" onClick={openDifferentFile} isDisabled={exporting} />
-                    {cropConfirmed ? (
-                      <Button label="Edit crop" variant="secondary" onClick={editCrop} isDisabled={exporting} />
-                    ) : (
+                    <Button
+                      label="Crop"
+                      variant={cropActive ? "primary" : "secondary"}
+                      aria-pressed={cropActive}
+                      onClick={toggleCropTool}
+                      isDisabled={exporting}
+                    />
+                    {cropActive && (
                       <Button label="Confirm crop" variant="primary" onClick={confirmCrop} isDisabled={exporting} />
                     )}
-                    <SegmentedControl label="Aspect ratio" value={aspect} onChange={changeAspect} isDisabled={cropConfirmed}>
+                    <SegmentedControl label="Aspect ratio" value={aspect} onChange={changeAspect} isDisabled={!cropActive}>
                       {ASPECTS.map((a) => (
                         <SegmentedControlItem key={a.value} value={a.value} label={a.label} />
                       ))}
@@ -462,10 +474,11 @@ export default function App() {
                   )}
                 </div>
                 <div className="stage-wrap">
-                  <div className="stage" ref={stageRef} data-crop-mode={cropConfirmed ? "confirmed" : "editing"}>
-                    <video ref={videoRef} src={clip.url} controls={cropConfirmed} playsInline />
+                  <div className="stage" ref={stageRef} data-active-tool={activeTool}>
+                    <video ref={videoRef} src={clip.url} controls={!cropActive} playsInline />
+                    {cropActive && (
                     <div
-                      className={`crop-rect${cropConfirmed ? " confirmed" : ""}`}
+                      className="crop-rect"
                       style={{
                         left: `${(clip.crop.x / clip.meta.width) * 100}%`,
                         top: `${(clip.crop.y / clip.meta.height) * 100}%`,
@@ -489,6 +502,7 @@ export default function App() {
                         />
                       ))}
                     </div>
+                    )}
                   </div>
                 </div>
                 <div className="panel">
@@ -509,7 +523,7 @@ export default function App() {
                           id={`crop-${field}`}
                           type="number"
                           min={0}
-                          disabled={cropConfirmed}
+                          disabled={!cropActive}
                           value={Math.round(clip.crop[field])}
                           onChange={(e) => updateField(field, e.target.value)}
                         />
@@ -517,9 +531,11 @@ export default function App() {
                     ))}
                   </div>
                   <Text type="supporting">
-                    {cropConfirmed
-                      ? "Crop confirmed. Use the video controls to preview playback. Output size is adjusted to even numbers."
-                      : "Confirm the crop to enable playback preview. Output size is adjusted to even numbers."}
+                    {cropActive
+                      ? "Editing crop. Drag the frame or use the fields above, then Confirm crop when done. Output size is adjusted to even numbers."
+                      : isFullFrame
+                        ? "Crop: full frame. Press Crop in the toolbar to edit it. Output size is adjusted to even numbers."
+                        : `Crop: ${Math.round(clip.crop.x)}, ${Math.round(clip.crop.y)} · ${outRect.width} × ${outRect.height}. Press Crop in the toolbar to edit it. Output size is adjusted to even numbers.`}
                   </Text>
                   {resultUrl && !exporting && (
                     <VStack gap={2}>
