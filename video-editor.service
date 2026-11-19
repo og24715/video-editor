@@ -1,0 +1,12 @@
+[Unit]
+Description=Video Editor (browser video crop editor, Astryx)
+After=network.target
+
+[Service]
+ExecStart=/home/og24715/.local/bin/node /home/og24715/workspace/video-editor/dist-server/server.js
+WorkingDirectory=/home/og24715/workspace/video-editor
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=default.target
