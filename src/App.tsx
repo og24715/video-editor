@@ -12,7 +12,7 @@ import { HStack } from "@astryxdesign/core/HStack";
 import { VStack } from "@astryxdesign/core/VStack";
 import { Spinner } from "@astryxdesign/core/Spinner";
 import { FolderOpen } from "lucide-react";
-import type { ActiveTool, AspectPreset, Clip, CropRect, LayoutState, LayoutTile, TileRect, TimelineItem, TimelineState, TimelineTrack, ToolId, TrimRange } from "./model";
+import type { ActiveTool, AspectPreset, Clip, CropRect, LayoutState, LayoutTile, MediaMeta, TileRect, TimelineItem, TimelineState, TimelineTrack, ToolId, TrimRange } from "./model";
 import { clampOutputSize, containRect, droppedTileRect, evenRect, pipItemRect, pipRects, resizedTiles, sideBySideRects } from "./model";
 import { ExportCancelledError, exportCropped, openInput, readMeta, webCodecsSupported } from "./exporter";
 import { exportComposite } from "./compositeExporter";
@@ -187,9 +187,8 @@ function SeekBar(props: {
   );
 }
 
-function subRectVideoStyle(clip: Clip): React.CSSProperties {
-  const { meta } = clip;
-  const crop = evenRect(clip.crop, meta.width, meta.height);
+function subRectVideoStyle(meta: MediaMeta, rawCrop: CropRect): React.CSSProperties {
+  const crop = evenRect(rawCrop, meta.width, meta.height);
   if (!(meta.width > 0) || !(meta.height > 0) || !(crop.width > 0) || !(crop.height > 0)) {
     return { left: "0%", top: "0%", width: "100%", height: "100%" };
   }
@@ -203,9 +202,9 @@ function subRectVideoStyle(clip: Clip): React.CSSProperties {
   };
 }
 
-function baseVideoBoxStyle(clip: Clip, outputWidth: number, outputHeight: number): React.CSSProperties {
+function baseVideoBoxStyle(meta: MediaMeta, rawCrop: CropRect, outputWidth: number, outputHeight: number): React.CSSProperties {
   if (!(outputWidth > 0) || !(outputHeight > 0)) return { inset: 0 };
-  const crop = evenRect(clip.crop, clip.meta.width, clip.meta.height);
+  const crop = evenRect(rawCrop, meta.width, meta.height);
   const fit = containRect(crop.width, crop.height, outputWidth, outputHeight);
   return {
     left: `${(fit.x / outputWidth) * 100}%`,
@@ -445,6 +444,38 @@ export default function App() {
   const setCrop = useCallback((crop: CropRect) => {
     setClips((prev) => prev.map((c) => (c.id === cropClipId ? { ...c, crop } : c)));
   }, [cropClipId]);
+
+  const drawerItemCrop: CropRect | null = (() => {
+    if (!drawerItemId || !timeline) return null;
+    for (const t of timeline.tracks) {
+      const it = t.items.find((i) => i.id === drawerItemId);
+      if (it) return it.crop;
+    }
+    return null;
+  })();
+
+  const applyDrawerCrop = (crop: CropRect) => {
+    if (drawerItemId && drawerItemCrop) {
+      setTimeline((prev) =>
+        prev
+          ? {
+              ...prev,
+              tracks: prev.tracks.map((t) => ({
+                ...t,
+                items: t.items.map((it) => (it.id === drawerItemId ? { ...it, crop } : it)),
+              })),
+            }
+          : prev,
+      );
+      return;
+    }
+    setCrop(crop);
+  };
+
+  const itemCropAspect = useCallback((item: TimelineItem, target: Clip): number => {
+    const out = evenRect(item.crop, target.meta.width, target.meta.height);
+    return out.height > 0 ? out.width / out.height : target.meta.width / target.meta.height;
+  }, []);
 
   const setClipTrim = useCallback((clipId: string, trim: TrimRange) => {
     setClips((prev) => prev.map((c) => (c.id === clipId ? { ...c, trim } : c)));
@@ -749,7 +780,7 @@ export default function App() {
       mode,
       startClientX: event.clientX,
       startClientY: event.clientY,
-      startCrop: { ...cropClip.crop },
+      startCrop: { ...(drawerItemCrop ?? cropClip.crop) },
     };
   };
 
@@ -793,7 +824,7 @@ export default function App() {
       }
       next = { x, y, width, height };
     }
-    setCrop(clampCrop(next, cropClip.meta.width, cropClip.meta.height, ratio));
+    applyDrawerCrop(clampCrop(next, cropClip.meta.width, cropClip.meta.height, ratio));
   };
 
   const endDrag = () => {
@@ -1012,8 +1043,9 @@ export default function App() {
   const addClipToBase = useCallback((clipId: string, index?: number) => {
     const target = clipsRef.current.find((c) => c.id === clipId);
     if (!target) return;
-    const sized = evenRect(target.crop, target.meta.width, target.meta.height);
-    const item: TimelineItem = { id: nextTlId("tlitem"), clipId, startSec: 0, rect: null, trim: { ...target.trim } };
+    const itemCrop: CropRect = { x: 0, y: 0, width: target.meta.width, height: target.meta.height };
+    const sized = evenRect(itemCrop, target.meta.width, target.meta.height);
+    const item: TimelineItem = { id: nextTlId("tlitem"), clipId, startSec: 0, rect: null, trim: { ...target.trim }, crop: itemCrop };
     setTimeline((prev) => {
       const base: TimelineState =
         prev ?? { outputWidth: 0, outputHeight: 0, tracks: [{ id: nextTlId("track"), items: [] }] };
@@ -1036,7 +1068,8 @@ export default function App() {
     (clipId: string, trackIndex: number, startSec: number) => {
       const target = clipsRef.current.find((c) => c.id === clipId);
       if (!target || trackIndex <= 0) return;
-      const sized = evenRect(target.crop, target.meta.width, target.meta.height);
+      const itemCrop: CropRect = { x: 0, y: 0, width: target.meta.width, height: target.meta.height };
+      const sized = evenRect(itemCrop, target.meta.width, target.meta.height);
       const itemId = nextTlId("tlitem");
       setTimeline((prev) => {
         if (!prev || !prev.tracks[trackIndex]) return prev;
@@ -1044,13 +1077,14 @@ export default function App() {
           prev.outputWidth > 0 && prev.outputHeight > 0
             ? prev
             : { ...prev, outputWidth: sized.width, outputHeight: sized.height };
-        const rect = pipItemRect(withSize.outputWidth, withSize.outputHeight, clipCropAspect(target));
+        const rect = pipItemRect(withSize.outputWidth, withSize.outputHeight, sized.height > 0 ? sized.width / sized.height : 16 / 9);
         const item: TimelineItem = {
           id: itemId,
           clipId,
           startSec: Math.max(0, Math.round(startSec * 10) / 10),
           rect,
           trim: { ...target.trim },
+          crop: itemCrop,
         };
         return {
           ...withSize,
@@ -1059,14 +1093,15 @@ export default function App() {
       });
       setSelectedTlItemId(itemId);
     },
-    [clipCropAspect],
+    [],
   );
 
   const addClipToNewTrack = useCallback(
     (clipId: string, startSec: number) => {
       const target = clipsRef.current.find((c) => c.id === clipId);
       if (!target) return;
-      const sized = evenRect(target.crop, target.meta.width, target.meta.height);
+      const itemCrop: CropRect = { x: 0, y: 0, width: target.meta.width, height: target.meta.height };
+      const sized = evenRect(itemCrop, target.meta.width, target.meta.height);
       const itemId = nextTlId("tlitem");
       setTimeline((prev) => {
         const base: TimelineState =
@@ -1075,19 +1110,20 @@ export default function App() {
           base.outputWidth > 0 && base.outputHeight > 0
             ? base
             : { ...base, outputWidth: sized.width, outputHeight: sized.height };
-        const rect = pipItemRect(withSize.outputWidth, withSize.outputHeight, clipCropAspect(target));
+        const rect = pipItemRect(withSize.outputWidth, withSize.outputHeight, sized.height > 0 ? sized.width / sized.height : 16 / 9);
         const item: TimelineItem = {
           id: itemId,
           clipId,
           startSec: Math.max(0, Math.round(startSec * 10) / 10),
           rect,
           trim: { ...target.trim },
+          crop: itemCrop,
         };
         return { ...withSize, tracks: [...withSize.tracks, { id: nextTlId("track"), items: [item] }] };
       });
       setSelectedTlItemId(itemId);
     },
-    [clipCropAspect],
+    [],
   );
 
   const reorderBaseItem = useCallback((itemId: string, rawTargetIndex: number) => {
@@ -1114,7 +1150,7 @@ export default function App() {
         if (!item.rect) continue;
         overlayTiles.push({ id: item.id, clipId: item.clipId, rect: item.rect, offsetSec: 0 });
         const target = clips.find((c) => c.id === item.clipId);
-        aspects.push(target ? clipCropAspect(target) : 16 / 9);
+        aspects.push(target ? itemCropAspect(item, target) : 16 / 9);
       }
     });
     if (overlayTiles.length === 0) {
@@ -1319,7 +1355,7 @@ export default function App() {
     } else {
       const data = tlEntries();
       const entry = data?.tracks[drag.trackIndex]?.items.find((e) => e.item.id === drag.itemId);
-      const aspect = entry ? clipCropAspect(entry.clip) : 16 / 9;
+      const aspect = entry ? itemCropAspect(entry.item, entry.clip) : 16 / 9;
       let width = Math.max(32, Math.min(s.width + dx, timeline.outputWidth - s.x));
       let height = width / aspect;
       if (s.y + height > timeline.outputHeight) {
@@ -1468,7 +1504,7 @@ export default function App() {
     if (!cropClip) return;
     const r = ASPECTS.find((a) => a.value === preset)?.ratio ?? null;
     if (!r) return;
-    const c = cropClip.crop;
+    const c = drawerItemCrop ?? cropClip.crop;
     let width = c.width;
     let height = width / r;
     if (height > cropClip.meta.height) {
@@ -1477,14 +1513,14 @@ export default function App() {
     }
     const x = Math.max(0, Math.min(c.x + (c.width - width) / 2, cropClip.meta.width - width));
     const y = Math.max(0, Math.min(c.y + (c.height - height) / 2, cropClip.meta.height - height));
-    setCrop({ x, y, width, height });
+    applyDrawerCrop({ x, y, width, height });
   };
 
   const updateField = (field: keyof CropRect, raw: string) => {
     if (!cropClip) return;
     const value = Number(raw);
     if (!Number.isFinite(value)) return;
-    setCrop(clampCrop({ ...cropClip.crop, [field]: value }, cropClip.meta.width, cropClip.meta.height, ratio));
+    applyDrawerCrop(clampCrop({ ...(drawerItemCrop ?? cropClip.crop), [field]: value }, cropClip.meta.width, cropClip.meta.height, ratio));
   };
 
   const runExport = async () => {
@@ -1517,7 +1553,7 @@ export default function App() {
         const baseSpecs = tlData.tracks[0].items.map((entry) => ({
           input: entry.clip.input,
           trim: entry.item.trim,
-          crop: evenRect(entry.clip.crop, entry.clip.meta.width, entry.clip.meta.height),
+          crop: evenRect(entry.item.crop, entry.clip.meta.width, entry.clip.meta.height),
         }));
         const overlaySpecs = [];
         for (let ti = 1; ti < tlData.tracks.length; ti++) {
@@ -1526,7 +1562,7 @@ export default function App() {
             overlaySpecs.push({
               input: entry.clip.input,
               trim: entry.item.trim,
-              crop: evenRect(entry.clip.crop, entry.clip.meta.width, entry.clip.meta.height),
+              crop: evenRect(entry.item.crop, entry.clip.meta.width, entry.clip.meta.height),
               startSec: entry.startSec,
               rect: entry.item.rect,
             });
@@ -1663,7 +1699,8 @@ export default function App() {
   };
 
   const outRect = clip ? evenRect(clip.crop, clip.meta.width, clip.meta.height) : null;
-  const cropOutRect = cropClip ? evenRect(cropClip.crop, cropClip.meta.width, cropClip.meta.height) : null;
+  const cropOutRect = cropClip ? evenRect(drawerItemCrop ?? cropClip.crop, cropClip.meta.width, cropClip.meta.height) : null;
+  const drawerCropRect: CropRect | null = cropClip ? (drawerItemCrop ?? cropClip.crop) : null;
   const trimIsFull =
     clip !== null && clip.trim.startSec <= 0.01 && clip.trim.endSec >= clip.meta.durationSec - 0.01;
   const selectionSec = clip ? Math.max(0, clip.trim.endSec - clip.trim.startSec) : 0;
@@ -2117,7 +2154,7 @@ export default function App() {
                           <div
                             className="tl-base-video"
                             key={activeBaseEntry.item.id}
-                            style={baseVideoBoxStyle(activeBaseEntry.clip, timeline.outputWidth, timeline.outputHeight)}
+                            style={baseVideoBoxStyle(activeBaseEntry.clip.meta, activeBaseEntry.item.crop, timeline.outputWidth, timeline.outputHeight)}
                           >
                             <video
                               ref={(el) => {
@@ -2126,7 +2163,7 @@ export default function App() {
                               }}
                               src={activeBaseEntry.clip.url}
                               playsInline
-                              style={subRectVideoStyle(activeBaseEntry.clip)}
+                              style={subRectVideoStyle(activeBaseEntry.clip.meta, activeBaseEntry.item.crop)}
                             />
                           </div>
                         )}
@@ -2167,7 +2204,7 @@ export default function App() {
                                   src={entry.clip.url}
                                   playsInline
                                   muted
-                                  style={subRectVideoStyle(entry.clip)}
+                                  style={subRectVideoStyle(entry.clip.meta, entry.item.crop)}
                                 />
                                 {isSelected && (
                                   <div
@@ -2229,7 +2266,7 @@ export default function App() {
                                 }}
                                 src={tileClip.url}
                                 playsInline
-                                style={subRectVideoStyle(tileClip)}
+                                style={subRectVideoStyle(tileClip.meta, tileClip.crop)}
                               />
                               <div
                                 className="layout-tile-handle"
@@ -2907,7 +2944,7 @@ export default function App() {
                               variant="secondary"
                               onClick={() => {
                                 updateTlItem(selectedTl.trackIndex, selectedTl.entry.item.id, {
-                                  rect: pipItemRect(timeline.outputWidth, timeline.outputHeight, clipCropAspect(selectedTl.entry.clip)),
+                                  rect: pipItemRect(timeline.outputWidth, timeline.outputHeight, itemCropAspect(selectedTl.entry.item, selectedTl.entry.clip)),
                                 });
                               }}
                               isDisabled={exporting}
@@ -2915,7 +2952,7 @@ export default function App() {
                           </HStack>
                           <Text type="supporting">
                             Drag the selected overlay on the preview to move it, and use the corner handle to resize
-                            it. Its size follows the clip's crop aspect while dragging on the preview.
+                            it. Its size follows the item's crop aspect while dragging on the preview.
                           </Text>
                         </>
                       )}
@@ -3008,10 +3045,10 @@ export default function App() {
               <div
                 className="crop-rect"
                 style={{
-                  left: `${(cropClip.crop.x / cropClip.meta.width) * 100}%`,
-                  top: `${(cropClip.crop.y / cropClip.meta.height) * 100}%`,
-                  width: `${(cropClip.crop.width / cropClip.meta.width) * 100}%`,
-                  height: `${(cropClip.crop.height / cropClip.meta.height) * 100}%`,
+                  left: `${((drawerCropRect?.x ?? 0) / cropClip.meta.width) * 100}%`,
+                  top: `${((drawerCropRect?.y ?? 0) / cropClip.meta.height) * 100}%`,
+                  width: `${((drawerCropRect?.width ?? 0) / cropClip.meta.width) * 100}%`,
+                  height: `${((drawerCropRect?.height ?? 0) / cropClip.meta.height) * 100}%`,
                 }}
                 onPointerDown={(e) => beginDrag(e, "move")}
                 onPointerMove={onDragMove}
@@ -3031,6 +3068,9 @@ export default function App() {
                 ))}
               </div>
             </div>
+            <Text type="supporting">
+              Crop — {drawerItem ? `timeline item (V${drawerItem.trackIndex + 1})` : "this clip"}
+            </Text>
             <SegmentedControl label="Aspect ratio" value={aspect} onChange={changeAspect} isDisabled={exporting}>
               {ASPECTS.map((a) => (
                 <SegmentedControlItem key={a.value} value={a.value} label={a.label} />
@@ -3044,7 +3084,7 @@ export default function App() {
                     id={`crop-${field}`}
                     type="number"
                     min={0}
-                    value={Math.round(cropClip.crop[field])}
+                    value={Math.round(drawerCropRect?.[field] ?? 0)}
                     onChange={(e) => updateField(field, e.target.value)}
                   />
                 </div>
@@ -3053,7 +3093,11 @@ export default function App() {
             <Text type="supporting">
               Output: {cropOutRect.width} × {cropOutRect.height} · Output size is adjusted to even numbers.
             </Text>
-            <Text type="supporting">Crop applies to all uses of this clip.</Text>
+            <Text type="supporting">
+              {drawerItem
+                ? "This crop belongs to this timeline item only; the clip's own crop is unchanged."
+                : "Crop applies to all uses of this clip."}
+            </Text>
             <Text type="supporting">
               Trim — {drawerItem ? `timeline item (V${drawerItem.trackIndex + 1})` : "this clip"}
             </Text>

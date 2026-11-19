@@ -74,6 +74,7 @@ export interface TimelineItem {
   startSec: number;
   rect: TileRect | null;
   trim: TrimRange;
+  crop: CropRect;
 }
 
 export interface TimelineTrack {
