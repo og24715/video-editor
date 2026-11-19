@@ -95,6 +95,22 @@ body {
   flex: 1;
 }
 
+.gif-settings {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px 14px;
+  background: var(--color-background-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-container, 16px);
+  padding: 8px 12px;
+}
+
+.gif-warning {
+  color: var(--color-warning, #f5b14c);
+  font-size: 13px;
+}
+
 .stage-wrap {
   display: flex;
   justify-content: center;

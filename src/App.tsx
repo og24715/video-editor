@@ -13,6 +13,7 @@ import { Clapperboard, FolderOpen } from "lucide-react";
 import type { ActiveTool, AspectPreset, Clip, CropRect, ToolId, TrimRange } from "./model";
 import { evenRect } from "./model";
 import { ExportCancelledError, exportCropped, openInput, readMeta, webCodecsSupported } from "./exporter";
+import { exportGif, gifOutputSize } from "./gifExporter";
 
 const ASPECTS: { value: AspectPreset; label: string; ratio: number | null }[] = [
   { value: "free", label: "Free", ratio: null },
@@ -20,6 +21,22 @@ const ASPECTS: { value: AspectPreset; label: string; ratio: number | null }[] = 
   { value: "9:16", label: "9:16", ratio: 9 / 16 },
   { value: "1:1", label: "1:1", ratio: 1 },
   { value: "4:3", label: "4:3", ratio: 4 / 3 },
+];
+
+type ExportFormat = "mp4" | "gif";
+
+const GIF_WIDTHS: { value: string; label: string }[] = [
+  { value: "240", label: "240" },
+  { value: "360", label: "360" },
+  { value: "480", label: "480" },
+  { value: "original", label: "Original" },
+];
+
+const GIF_FPS_OPTIONS: { value: string; label: string }[] = [
+  { value: "10", label: "10" },
+  { value: "15", label: "15" },
+  { value: "20", label: "20" },
+  { value: "30", label: "30" },
 ];
 
 const HANDLES = ["nw", "n", "ne", "e", "se", "s", "sw", "w"] as const;
@@ -136,6 +153,10 @@ export default function App() {
   const [resultName, setResultName] = useState("");
   const [resultSize, setResultSize] = useState(0);
   const [usedCodec, setUsedCodec] = useState<string | null>(null);
+  const [exportFormat, setExportFormat] = useState<ExportFormat>("mp4");
+  const [gifWidth, setGifWidth] = useState("480");
+  const [gifFps, setGifFps] = useState("15");
+  const [resultFormat, setResultFormat] = useState<ExportFormat>("mp4");
   const [audioCopied, setAudioCopied] = useState<boolean | null>(null);
   const [playheadSec, setPlayheadSec] = useState(0);
   const [thumbs, setThumbs] = useState<string[]>([]);
@@ -584,29 +605,52 @@ export default function App() {
     setExporting(true);
     try {
       const out = evenRect(clip.crop, clip.meta.width, clip.meta.height);
-      const res = await exportCropped({
-        input: clip.input,
-        crop: out,
-        trim: clip.trim,
-        onProgress: (value) => setProgress(value),
-        isCancelled: () => cancelRef.current,
-      });
-      setUsedCodec(res.codecLabel);
-      setAudioCopied(res.audioCopied);
-      const suggested = `${clip.file.name.replace(/\.mp4$/i, "")}-edited.mp4`;
-      const url = URL.createObjectURL(res.blob);
+      let blob: Blob;
+      let suggested: string;
+      let pickerType: { description: string; accept: Record<string, string[]> };
+      if (exportFormat === "gif") {
+        const res = await exportGif({
+          input: clip.input,
+          crop: out,
+          trim: clip.trim,
+          width: gifWidth === "original" ? 0 : Number(gifWidth),
+          fps: Number(gifFps),
+          onProgress: (value) => setProgress(value),
+          isCancelled: () => cancelRef.current,
+        });
+        blob = res.blob;
+        setUsedCodec(`GIF ${res.width} × ${res.height} · ${res.frameCount} frames · looping`);
+        setResultFormat("gif");
+        suggested = `${clip.file.name.replace(/\.mp4$/i, "")}-loop.gif`;
+        pickerType = { description: "GIF image", accept: { "image/gif": [".gif"] } };
+      } else {
+        const res = await exportCropped({
+          input: clip.input,
+          crop: out,
+          trim: clip.trim,
+          onProgress: (value) => setProgress(value),
+          isCancelled: () => cancelRef.current,
+        });
+        blob = res.blob;
+        setUsedCodec(res.codecLabel);
+        setAudioCopied(res.audioCopied);
+        setResultFormat("mp4");
+        suggested = `${clip.file.name.replace(/\.mp4$/i, "")}-edited.mp4`;
+        pickerType = { description: "MP4 video", accept: { "video/mp4": [".mp4"] } };
+      }
+      const url = URL.createObjectURL(blob);
       setResultUrl(url);
       setResultName(suggested);
-      setResultSize(res.blob.size);
+      setResultSize(blob.size);
       const picker = (window as unknown as SaveFilePickerWindow).showSaveFilePicker;
       if (picker) {
         try {
           const handle = await picker({
             suggestedName: suggested,
-            types: [{ description: "MP4 video", accept: { "video/mp4": [".mp4"] } }],
+            types: [pickerType],
           });
           const writable = await handle.createWritable();
-          await writable.write(res.blob);
+          await writable.write(blob);
           await writable.close();
           setResultName(handle.name);
           setNotice(`Saved to ${handle.name}`);
@@ -741,6 +785,15 @@ export default function App() {
                       Output: {outRect.width} × {outRect.height}
                     </Text>
                     <div className="toolbar-spacer" />
+                    <SegmentedControl
+                      label="Export format"
+                      value={exportFormat}
+                      onChange={(value) => setExportFormat(value === "gif" ? "gif" : "mp4")}
+                      isDisabled={exporting}
+                    >
+                      <SegmentedControlItem value="mp4" label="MP4" />
+                      <SegmentedControlItem value="gif" label="GIF" />
+                    </SegmentedControl>
                     {exporting ? (
                       <Button
                         label="Cancel"
@@ -750,9 +803,40 @@ export default function App() {
                         }}
                       />
                     ) : (
-                      <Button label="Export MP4" variant="primary" onClick={() => void runExport()} isDisabled={!supported} />
+                      <Button
+                        label={exportFormat === "gif" ? "Export GIF" : "Export MP4"}
+                        variant="primary"
+                        onClick={() => void runExport()}
+                        isDisabled={!supported}
+                      />
                     )}
                   </div>
+                  {exportFormat === "gif" && (
+                    <div className="gif-settings">
+                      <Text type="supporting">Width</Text>
+                      <SegmentedControl label="GIF width" value={gifWidth} onChange={setGifWidth} isDisabled={exporting}>
+                        {GIF_WIDTHS.map((w) => (
+                          <SegmentedControlItem key={w.value} value={w.value} label={w.label} />
+                        ))}
+                      </SegmentedControl>
+                      <Text type="supporting">FPS</Text>
+                      <SegmentedControl label="GIF frame rate" value={gifFps} onChange={setGifFps} isDisabled={exporting}>
+                        {GIF_FPS_OPTIONS.map((f) => (
+                          <SegmentedControlItem key={f.value} value={f.value} label={f.label} />
+                        ))}
+                      </SegmentedControl>
+                      <Text type="supporting">
+                        GIF: {gifOutputSize(outRect.width, outRect.height, gifWidth === "original" ? 0 : Number(gifWidth)).width} ×{" "}
+                        {gifOutputSize(outRect.width, outRect.height, gifWidth === "original" ? 0 : Number(gifWidth)).height} · no
+                        audio
+                      </Text>
+                      {selectionSec > 10 && (
+                        <span className="gif-warning">
+                          Selection is {fmtSec(selectionSec)} — longer than 10 seconds, so the GIF may get large.
+                        </span>
+                      )}
+                    </div>
+                  )}
                   {exporting && (
                     <div className="toolbar-progress">
                       <div className="progress-track">
@@ -931,12 +1015,20 @@ export default function App() {
                   )}
                   {resultUrl && !exporting && (
                     <VStack gap={2}>
-                      <Text type="supporting">
-                        Done. Codec: {usedCodec ?? "unknown"}
-                        {clip.meta.hasAudio ? (audioCopied ? " · Audio copied without re-encoding" : " · Audio could not be copied") : " · No audio track"}
-                        {" · "}
-                        {fmtSize(resultSize)}
-                      </Text>
+                      {resultFormat === "gif" ? (
+                        <Text type="supporting">
+                          Done. {usedCodec ?? "GIF"}
+                          {" · "}
+                          {fmtSize(resultSize)}
+                        </Text>
+                      ) : (
+                        <Text type="supporting">
+                          Done. Codec: {usedCodec ?? "unknown"}
+                          {clip.meta.hasAudio ? (audioCopied ? " · Audio copied without re-encoding" : " · Audio could not be copied") : " · No audio track"}
+                          {" · "}
+                          {fmtSize(resultSize)}
+                        </Text>
+                      )}
                       <HStack gap={3}>
                         <a href={resultUrl} download={resultName}>
                           <Button label={`Download ${resultName}`} variant="secondary" />
