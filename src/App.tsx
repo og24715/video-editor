@@ -249,6 +249,20 @@ export default function App() {
     setCropConfirmed(false);
   };
 
+  const openDifferentFile = () => {
+    setClips((prev) => {
+      for (const old of prev) {
+        old.input.dispose();
+        URL.revokeObjectURL(old.url);
+      }
+      return [];
+    });
+    setResultUrl(null);
+    setCropConfirmed(false);
+    setError(null);
+    setNotice(null);
+  };
+
   const changeAspect = (value: string) => {
     if (cropConfirmed) return;
     const preset = (ASPECTS.find((a) => a.value === value)?.value ?? "free") as AspectPreset;
@@ -409,6 +423,44 @@ export default function App() {
             />
             {clip && outRect && (
               <div className="editor-grid">
+                <div className="toolbar-sticky">
+                  <div className="toolbar">
+                    <Button label="Open a different file" variant="secondary" onClick={openDifferentFile} isDisabled={exporting} />
+                    {cropConfirmed ? (
+                      <Button label="Edit crop" variant="secondary" onClick={editCrop} isDisabled={exporting} />
+                    ) : (
+                      <Button label="Confirm crop" variant="primary" onClick={confirmCrop} isDisabled={exporting} />
+                    )}
+                    <SegmentedControl label="Aspect ratio" value={aspect} onChange={changeAspect} isDisabled={cropConfirmed}>
+                      {ASPECTS.map((a) => (
+                        <SegmentedControlItem key={a.value} value={a.value} label={a.label} />
+                      ))}
+                    </SegmentedControl>
+                    <Text type="supporting">
+                      Output: {outRect.width} × {outRect.height}
+                    </Text>
+                    <div className="toolbar-spacer" />
+                    {exporting ? (
+                      <Button
+                        label="Cancel"
+                        variant="secondary"
+                        onClick={() => {
+                          cancelRef.current = true;
+                        }}
+                      />
+                    ) : (
+                      <Button label="Export cropped MP4" variant="primary" onClick={() => void runExport()} isDisabled={!supported} />
+                    )}
+                  </div>
+                  {exporting && (
+                    <div className="toolbar-progress">
+                      <div className="progress-track">
+                        <div className="progress-fill" style={{ width: `${Math.round(progress * 100)}%` }} />
+                      </div>
+                      <Text type="supporting">Exporting… {Math.round(progress * 100)}%</Text>
+                    </div>
+                  )}
+                </div>
                 <div className="stage-wrap">
                   <div className="stage" ref={stageRef} data-crop-mode={cropConfirmed ? "confirmed" : "editing"}>
                     <video ref={videoRef} src={clip.url} controls={cropConfirmed} playsInline />
@@ -449,14 +501,6 @@ export default function App() {
                     <Text type="supporting">Video codec: {clip.meta.videoCodec ?? "unknown"}</Text>
                     <Text type="supporting">Audio: {clip.meta.hasAudio ? (clip.meta.audioCodec ?? "yes") : "none"}</Text>
                   </div>
-                  <div>
-                    <Text type="supporting">Aspect ratio</Text>
-                    <SegmentedControl label="Aspect ratio" value={aspect} onChange={changeAspect} isDisabled={cropConfirmed}>
-                      {ASPECTS.map((a) => (
-                        <SegmentedControlItem key={a.value} value={a.value} label={a.label} />
-                      ))}
-                    </SegmentedControl>
-                  </div>
                   <div className="field-row">
                     {(["x", "y", "width", "height"] as const).map((field) => (
                       <div className="field" key={field}>
@@ -473,63 +517,10 @@ export default function App() {
                     ))}
                   </div>
                   <Text type="supporting">
-                    Output size: {outRect.width} × {outRect.height} (adjusted to even numbers)
+                    {cropConfirmed
+                      ? "Crop confirmed. Use the video controls to preview playback. Output size is adjusted to even numbers."
+                      : "Confirm the crop to enable playback preview. Output size is adjusted to even numbers."}
                   </Text>
-                  {cropConfirmed ? (
-                    <HStack gap={3} vAlign="center">
-                      <Button label="Edit crop" variant="secondary" onClick={editCrop} isDisabled={exporting} />
-                      <StackItem size="fill">
-                        <Text type="supporting">Crop confirmed. Use the video controls to preview playback.</Text>
-                      </StackItem>
-                    </HStack>
-                  ) : (
-                    <HStack gap={3} vAlign="center">
-                      <Button label="Confirm crop" variant="primary" onClick={confirmCrop} isDisabled={exporting} />
-                      <StackItem size="fill">
-                        <Text type="supporting">Confirm the crop to enable playback preview.</Text>
-                      </StackItem>
-                    </HStack>
-                  )}
-                  {exporting ? (
-                    <VStack gap={3}>
-                      <div className="progress-track">
-                        <div className="progress-fill" style={{ width: `${Math.round(progress * 100)}%` }} />
-                      </div>
-                      <HStack gap={3} vAlign="center">
-                        <StackItem size="fill">
-                          <Text type="supporting">Exporting… {Math.round(progress * 100)}%</Text>
-                        </StackItem>
-                        <Button
-                          label="Cancel"
-                          variant="secondary"
-                          onClick={() => {
-                            cancelRef.current = true;
-                          }}
-                        />
-                      </HStack>
-                    </VStack>
-                  ) : (
-                    <HStack gap={3} vAlign="center">
-                      <Button label="Export cropped MP4" variant="primary" onClick={() => void runExport()} isDisabled={!supported} />
-                      <Button
-                        label="Open a different file"
-                        variant="secondary"
-                        onClick={() => {
-                          setClips((prev) => {
-                            for (const old of prev) {
-                              old.input.dispose();
-                              URL.revokeObjectURL(old.url);
-                            }
-                            return [];
-                          });
-                          setResultUrl(null);
-                          setCropConfirmed(false);
-                          setError(null);
-                          setNotice(null);
-                        }}
-                      />
-                    </HStack>
-                  )}
                   {resultUrl && !exporting && (
                     <VStack gap={2}>
                       <Text type="supporting">
