@@ -7,6 +7,7 @@ import { Text } from "@astryxdesign/core/Text";
 import { Button } from "@astryxdesign/core/Button";
 import { SegmentedControl, SegmentedControlItem } from "@astryxdesign/core/SegmentedControl";
 import { Slider } from "@astryxdesign/core/Slider";
+import { Drawer, DrawerHeader } from "@astryxdesign/core/Drawer";
 import { HStack } from "@astryxdesign/core/HStack";
 import { VStack } from "@astryxdesign/core/VStack";
 import { Spinner } from "@astryxdesign/core/Spinner";
@@ -330,6 +331,7 @@ export default function App() {
   const [layout, setLayout] = useState<LayoutState | null>(null);
   const [layoutPlaying, setLayoutPlaying] = useState(false);
   const [layoutPlayheadSec, setLayoutPlayheadSec] = useState(0);
+  const [cropClipId, setCropClipId] = useState<string | null>(null);
   const [outWText, setOutWText] = useState("");
   const [outHText, setOutHText] = useState("");
   const [timeline, setTimeline] = useState<TimelineState | null>(null);
@@ -352,6 +354,7 @@ export default function App() {
   const tileDragRef = useRef<TileDragState | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const stageRef = useRef<HTMLDivElement | null>(null);
+  const drawerStageRef = useRef<HTMLDivElement | null>(null);
   const stageWrapRef = useRef<HTMLDivElement | null>(null);
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const dragRef = useRef<DragState | null>(null);
@@ -382,8 +385,8 @@ export default function App() {
   const supported = webCodecsSupported();
 
   const clip = clips.find((c) => c.id === activeClipId) ?? clips[0] ?? null;
+  const cropClip = clips.find((c) => c.id === cropClipId) ?? null;
   const ratio = ASPECTS.find((a) => a.value === aspect)?.ratio ?? null;
-  const cropActive = activeTool === "crop";
   const trimActive = activeTool === "trim";
   const layoutActive = activeTool === "layout";
   const timelineActive = activeTool === "timeline";
@@ -418,11 +421,8 @@ export default function App() {
   }, [timeline?.outputWidth, timeline?.outputHeight]);
 
   const setCrop = useCallback((crop: CropRect) => {
-    setClips((prev) => {
-      const targetId = prev.find((c) => c.id === activeClipId)?.id ?? prev[0]?.id;
-      return prev.map((c) => (c.id === targetId ? { ...c, crop } : c));
-    });
-  }, [activeClipId]);
+    setClips((prev) => prev.map((c) => (c.id === cropClipId ? { ...c, crop } : c)));
+  }, [cropClipId]);
 
   const setTrim = useCallback((trim: TrimRange) => {
     setClips((prev) => {
@@ -527,6 +527,7 @@ export default function App() {
       const remaining = clipsRef.current.filter((c) => c.id !== clipId);
       return remaining[0]?.id ?? null;
     });
+    setCropClipId((prev) => (prev === clipId ? null : prev));
     setLayoutPlaying(false);
   }, []);
 
@@ -863,7 +864,7 @@ export default function App() {
   }, [trimActive, clip?.id]);
 
   const beginDrag = (event: React.PointerEvent, mode: "move" | Handle) => {
-    if (!clip || exporting || !cropActive) return;
+    if (!cropClip || exporting) return;
     event.preventDefault();
     event.stopPropagation();
     (event.target as HTMLElement).setPointerCapture(event.pointerId);
@@ -871,18 +872,18 @@ export default function App() {
       mode,
       startClientX: event.clientX,
       startClientY: event.clientY,
-      startCrop: { ...clip.crop },
+      startCrop: { ...cropClip.crop },
     };
   };
 
   const onDragMove = (event: React.PointerEvent) => {
     const drag = dragRef.current;
-    const stage = stageRef.current;
-    if (!drag || !clip || !stage) return;
+    const stage = drawerStageRef.current;
+    if (!drag || !cropClip || !stage) return;
     const rect = stage.getBoundingClientRect();
     if (rect.width === 0 || rect.height === 0) return;
-    const dx = ((event.clientX - drag.startClientX) / rect.width) * clip.meta.width;
-    const dy = ((event.clientY - drag.startClientY) / rect.height) * clip.meta.height;
+    const dx = ((event.clientX - drag.startClientX) / rect.width) * cropClip.meta.width;
+    const dy = ((event.clientY - drag.startClientY) / rect.height) * cropClip.meta.height;
     const s = drag.startCrop;
     let next: CropRect = { ...s };
     if (drag.mode === "move") {
@@ -915,7 +916,7 @@ export default function App() {
       }
       next = { x, y, width, height };
     }
-    setCrop(clampCrop(next, clip.meta.width, clip.meta.height, ratio));
+    setCrop(clampCrop(next, cropClip.meta.width, cropClip.meta.height, ratio));
   };
 
   const endDrag = () => {
@@ -923,7 +924,7 @@ export default function App() {
   };
 
   const toggleTool = (tool: ToolId) => {
-    if (tool === "crop" || tool === "layout" || tool === "timeline") videoRef.current?.pause();
+    if (tool === "layout" || tool === "timeline") videoRef.current?.pause();
     const next: ActiveTool = activeTool === tool ? "none" : tool;
     if (next !== "layout") setLayoutPlaying(false);
     if (next === "timeline") {
@@ -935,10 +936,6 @@ export default function App() {
     if (next === "trim") clampPlayheadToTrim();
   };
 
-  const confirmCrop = () => {
-    setActiveTool("none");
-  };
-
   const openDifferentFile = () => {
     setClips((prev) => {
       for (const old of prev) {
@@ -948,6 +945,7 @@ export default function App() {
       return [];
     });
     setActiveClipId(null);
+    setCropClipId(null);
     setLayout(null);
     setLayoutPlaying(false);
     setTimeline(null);
@@ -1554,29 +1552,28 @@ export default function App() {
   }, []);
 
   const changeAspect = (value: string) => {
-    if (!cropActive) return;
     const preset = (ASPECTS.find((a) => a.value === value)?.value ?? "free") as AspectPreset;
     setAspect(preset);
-    if (!clip) return;
+    if (!cropClip) return;
     const r = ASPECTS.find((a) => a.value === preset)?.ratio ?? null;
     if (!r) return;
-    const c = clip.crop;
+    const c = cropClip.crop;
     let width = c.width;
     let height = width / r;
-    if (height > clip.meta.height) {
-      height = clip.meta.height;
+    if (height > cropClip.meta.height) {
+      height = cropClip.meta.height;
       width = height * r;
     }
-    const x = Math.max(0, Math.min(c.x + (c.width - width) / 2, clip.meta.width - width));
-    const y = Math.max(0, Math.min(c.y + (c.height - height) / 2, clip.meta.height - height));
+    const x = Math.max(0, Math.min(c.x + (c.width - width) / 2, cropClip.meta.width - width));
+    const y = Math.max(0, Math.min(c.y + (c.height - height) / 2, cropClip.meta.height - height));
     setCrop({ x, y, width, height });
   };
 
   const updateField = (field: keyof CropRect, raw: string) => {
-    if (!clip || !cropActive) return;
+    if (!cropClip) return;
     const value = Number(raw);
     if (!Number.isFinite(value)) return;
-    setCrop(clampCrop({ ...clip.crop, [field]: value }, clip.meta.width, clip.meta.height, ratio));
+    setCrop(clampCrop({ ...cropClip.crop, [field]: value }, cropClip.meta.width, cropClip.meta.height, ratio));
   };
 
   const updateTrimField = (field: keyof TrimRange, raw: string) => {
@@ -1842,6 +1839,7 @@ export default function App() {
   };
 
   const outRect = clip ? evenRect(clip.crop, clip.meta.width, clip.meta.height) : null;
+  const cropOutRect = cropClip ? evenRect(cropClip.crop, cropClip.meta.width, cropClip.meta.height) : null;
   const trimIsFull =
     clip !== null && clip.trim.startSec <= 0.01 && clip.trim.endSec >= clip.meta.durationSec - 0.01;
   const selectionSec = clip ? Math.max(0, clip.trim.endSec - clip.trim.startSec) : 0;
@@ -2058,6 +2056,7 @@ export default function App() {
                       setActiveClipId(item.id);
                       setPlayheadSec(0);
                     }}
+                    onDoubleClick={() => setCropClipId(item.id)}
                   >
                     <video className="pool-thumb" src={item.url} preload="metadata" muted playsInline />
                     <div className="pool-item-name">{item.file.name}</div>
@@ -2082,7 +2081,7 @@ export default function App() {
                 ))}
               </div>
               {clips.length > 0 && (
-                <Text type="supporting">Drag a video onto the canvas to place it as a tile.</Text>
+                <Text type="supporting">Drag a video onto the canvas to place it as a tile. Double-click a video to crop it.</Text>
               )}
             </aside>
             <div className="editor-column">
@@ -2144,13 +2143,6 @@ export default function App() {
                   <div className="toolbar">
                     <Button label="Open a different file" variant="secondary" onClick={openDifferentFile} isDisabled={exporting} />
                     <Button
-                      label="Crop"
-                      variant={cropActive ? "primary" : "secondary"}
-                      aria-pressed={cropActive}
-                      onClick={() => toggleTool("crop")}
-                      isDisabled={exporting}
-                    />
-                    <Button
                       label="Trim"
                       variant={trimActive ? "primary" : "secondary"}
                       aria-pressed={trimActive}
@@ -2173,14 +2165,6 @@ export default function App() {
                         isDisabled={exporting}
                       />
                     )}
-                    {cropActive && (
-                      <Button label="Confirm crop" variant="primary" onClick={confirmCrop} isDisabled={exporting} />
-                    )}
-                    <SegmentedControl label="Aspect ratio" value={aspect} onChange={changeAspect} isDisabled={!cropActive}>
-                      {ASPECTS.map((a) => (
-                        <SegmentedControlItem key={a.value} value={a.value} label={a.label} />
-                      ))}
-                    </SegmentedControl>
                     <Text type="supporting">
                       {timelineActive && timeline && timeline.outputWidth > 0
                         ? `Output: ${timeline.outputWidth} × ${timeline.outputHeight}`
@@ -2411,34 +2395,7 @@ export default function App() {
                     </div>
                   ) : (
                   <div className="stage" ref={stageRef} data-active-tool={activeTool}>
-                    <video ref={videoRef} src={clip.url} controls={!cropActive} playsInline />
-                    {cropActive && (
-                    <div
-                      className="crop-rect"
-                      style={{
-                        left: `${(clip.crop.x / clip.meta.width) * 100}%`,
-                        top: `${(clip.crop.y / clip.meta.height) * 100}%`,
-                        width: `${(clip.crop.width / clip.meta.width) * 100}%`,
-                        height: `${(clip.crop.height / clip.meta.height) * 100}%`,
-                      }}
-                      onPointerDown={(e) => beginDrag(e, "move")}
-                      onPointerMove={onDragMove}
-                      onPointerUp={endDrag}
-                      onPointerCancel={endDrag}
-                    >
-                      {HANDLES.map((handle) => (
-                        <div
-                          key={handle}
-                          className="crop-handle"
-                          style={{ ...HANDLE_POS[handle], cursor: HANDLE_CURSOR[handle] }}
-                          onPointerDown={(e) => beginDrag(e, handle)}
-                          onPointerMove={onDragMove}
-                          onPointerUp={endDrag}
-                          onPointerCancel={endDrag}
-                        />
-                      ))}
-                    </div>
-                    )}
+                    <video ref={videoRef} src={clip.url} controls playsInline />
                   </div>
                   )}
                 </div>
@@ -2557,6 +2514,7 @@ export default function App() {
                                       e.dataTransfer.setData(TL_ITEM_DRAG_TYPE, entry.item.id);
                                       e.dataTransfer.effectAllowed = "move";
                                     }}
+                                    onDoubleClick={() => setCropClipId(entry.clip.id)}
                                   >
                                     <div className="tl-thumbs">
                                       {(
@@ -2597,6 +2555,7 @@ export default function App() {
                                         width: `${tlTotalSec > 0 ? (entry.durationSec / tlTotalSec) * 100 : 0}%`,
                                       }}
                                       onPointerDown={(e) => beginTlBlockDrag(e, trackIndex, entry)}
+                                      onDoubleClick={() => setCropClipId(entry.clip.id)}
                                       onPointerMove={onTlBlockDragMove}
                                       onPointerUp={endTlBlockDrag}
                                       onPointerCancel={endTlBlockDrag}
@@ -2708,27 +2667,6 @@ export default function App() {
                     <Text type="supporting">Video codec: {clip.meta.videoCodec ?? "unknown"}</Text>
                     <Text type="supporting">Audio: {clip.meta.hasAudio ? (clip.meta.audioCodec ?? "yes") : "none"}</Text>
                   </div>
-                  {cropActive && (
-                    <>
-                      <div className="field-row">
-                        {(["x", "y", "width", "height"] as const).map((field) => (
-                          <div className="field" key={field}>
-                            <label htmlFor={`crop-${field}`}>{field === "width" ? "Width" : field === "height" ? "Height" : field.toUpperCase()}</label>
-                            <input
-                              id={`crop-${field}`}
-                              type="number"
-                              min={0}
-                              value={Math.round(clip.crop[field])}
-                              onChange={(e) => updateField(field, e.target.value)}
-                            />
-                          </div>
-                        ))}
-                      </div>
-                      <Text type="supporting">
-                        Editing crop. Drag the frame or use the fields above, then Confirm crop when done. Output size is adjusted to even numbers.
-                      </Text>
-                    </>
-                  )}
                   {trimActive && (
                     <>
                       <div className="field-row">
@@ -3174,6 +3112,79 @@ export default function App() {
           </div>
         </main>
       </div>
+      <Drawer
+        isOpen={cropClip !== null}
+        onOpenChange={(open) => {
+          if (!open) setCropClipId(null);
+        }}
+        label={cropClip ? `Crop ${cropClip.file.name}` : "Crop"}
+        side="end"
+        width={520}
+        data-testid="crop-drawer"
+      >
+        {cropClip && cropOutRect && (
+          <VStack gap={4}>
+            <DrawerHeader
+              title={cropClip.file.name}
+              subtitle="Crop"
+              onOpenChange={(open) => {
+                if (!open) setCropClipId(null);
+              }}
+            />
+            <div className="drawer-stage" ref={drawerStageRef}>
+              <video src={cropClip.url} controls playsInline />
+              <div
+                className="crop-rect"
+                style={{
+                  left: `${(cropClip.crop.x / cropClip.meta.width) * 100}%`,
+                  top: `${(cropClip.crop.y / cropClip.meta.height) * 100}%`,
+                  width: `${(cropClip.crop.width / cropClip.meta.width) * 100}%`,
+                  height: `${(cropClip.crop.height / cropClip.meta.height) * 100}%`,
+                }}
+                onPointerDown={(e) => beginDrag(e, "move")}
+                onPointerMove={onDragMove}
+                onPointerUp={endDrag}
+                onPointerCancel={endDrag}
+              >
+                {HANDLES.map((handle) => (
+                  <div
+                    key={handle}
+                    className="crop-handle"
+                    style={{ ...HANDLE_POS[handle], cursor: HANDLE_CURSOR[handle] }}
+                    onPointerDown={(e) => beginDrag(e, handle)}
+                    onPointerMove={onDragMove}
+                    onPointerUp={endDrag}
+                    onPointerCancel={endDrag}
+                  />
+                ))}
+              </div>
+            </div>
+            <SegmentedControl label="Aspect ratio" value={aspect} onChange={changeAspect} isDisabled={exporting}>
+              {ASPECTS.map((a) => (
+                <SegmentedControlItem key={a.value} value={a.value} label={a.label} />
+              ))}
+            </SegmentedControl>
+            <div className="field-row">
+              {(["x", "y", "width", "height"] as const).map((field) => (
+                <div className="field" key={field}>
+                  <label htmlFor={`crop-${field}`}>{field === "width" ? "Width" : field === "height" ? "Height" : field.toUpperCase()}</label>
+                  <input
+                    id={`crop-${field}`}
+                    type="number"
+                    min={0}
+                    value={Math.round(cropClip.crop[field])}
+                    onChange={(e) => updateField(field, e.target.value)}
+                  />
+                </div>
+              ))}
+            </div>
+            <Text type="supporting">
+              Output: {cropOutRect.width} × {cropOutRect.height} · Output size is adjusted to even numbers.
+            </Text>
+            <Text type="supporting">Applies to all uses of this clip.</Text>
+          </VStack>
+        )}
+      </Drawer>
     </Theme>
   );
 }

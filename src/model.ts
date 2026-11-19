@@ -33,7 +33,7 @@ export interface Clip {
 
 export type AspectPreset = "free" | "16:9" | "9:16" | "1:1" | "4:3";
 
-export type ToolId = "crop" | "trim" | "layout" | "timeline";
+export type ToolId = "trim" | "layout" | "timeline";
 
 export type ActiveTool = "none" | ToolId;
 
