@@ -106,6 +106,7 @@ function fmtSize(bytes: number): string {
 export default function App() {
   const [clips, setClips] = useState<Clip[]>([]);
   const [aspect, setAspect] = useState<AspectPreset>("free");
+  const [cropConfirmed, setCropConfirmed] = useState(false);
   const [dragging, setDragging] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -119,6 +120,7 @@ export default function App() {
   const [audioCopied, setAudioCopied] = useState<boolean | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const stageRef = useRef<HTMLDivElement | null>(null);
+  const videoRef = useRef<HTMLVideoElement | null>(null);
   const dragRef = useRef<DragState | null>(null);
   const cancelRef = useRef(false);
   const supported = webCodecsSupported();
@@ -136,6 +138,7 @@ export default function App() {
   const loadFile = useCallback(async (file: File) => {
     setError(null);
     setNotice(null);
+    setCropConfirmed(false);
     setResultUrl(null);
     setUsedCodec(null);
     setAudioCopied(null);
@@ -178,7 +181,7 @@ export default function App() {
   }, []);
 
   const beginDrag = (event: React.PointerEvent, mode: "move" | Handle) => {
-    if (!clip || exporting) return;
+    if (!clip || exporting || cropConfirmed) return;
     event.preventDefault();
     event.stopPropagation();
     (event.target as HTMLElement).setPointerCapture(event.pointerId);
@@ -237,7 +240,17 @@ export default function App() {
     dragRef.current = null;
   };
 
+  const confirmCrop = () => {
+    setCropConfirmed(true);
+  };
+
+  const editCrop = () => {
+    videoRef.current?.pause();
+    setCropConfirmed(false);
+  };
+
   const changeAspect = (value: string) => {
+    if (cropConfirmed) return;
     const preset = (ASPECTS.find((a) => a.value === value)?.value ?? "free") as AspectPreset;
     setAspect(preset);
     if (!clip) return;
@@ -256,7 +269,7 @@ export default function App() {
   };
 
   const updateField = (field: keyof CropRect, raw: string) => {
-    if (!clip) return;
+    if (!clip || cropConfirmed) return;
     const value = Number(raw);
     if (!Number.isFinite(value)) return;
     setCrop(clampCrop({ ...clip.crop, [field]: value }, clip.meta.width, clip.meta.height, ratio));
@@ -265,7 +278,7 @@ export default function App() {
   const runExport = async () => {
     if (!clip || exporting) return;
     if (!supported) {
-      setError("WebCodecs is not available in this browser. Please use Chrome or Edge.");
+      setError("WebCodecs is not available in this context. Open this page via localhost or HTTPS in Chrome or Edge.");
       return;
     }
     setError(null);
@@ -346,7 +359,7 @@ export default function App() {
           <VStack gap={6}>
             {!supported && (
               <div className="error-box">
-                <Text>WebCodecs is not available in this browser, so exporting is disabled. Please open this page in Chrome or Edge.</Text>
+                <Text>WebCodecs is not available in this context, so exporting is disabled. It requires a secure context — open this page via localhost or HTTPS in Chrome or Edge.</Text>
               </div>
             )}
             {error && (
@@ -397,10 +410,10 @@ export default function App() {
             {clip && outRect && (
               <div className="editor-grid">
                 <div className="stage-wrap">
-                  <div className="stage" ref={stageRef}>
-                    <video src={clip.url} controls playsInline />
+                  <div className="stage" ref={stageRef} data-crop-mode={cropConfirmed ? "confirmed" : "editing"}>
+                    <video ref={videoRef} src={clip.url} controls={cropConfirmed} playsInline />
                     <div
-                      className="crop-rect"
+                      className={`crop-rect${cropConfirmed ? " confirmed" : ""}`}
                       style={{
                         left: `${(clip.crop.x / clip.meta.width) * 100}%`,
                         top: `${(clip.crop.y / clip.meta.height) * 100}%`,
@@ -438,7 +451,7 @@ export default function App() {
                   </div>
                   <div>
                     <Text type="supporting">Aspect ratio</Text>
-                    <SegmentedControl label="Aspect ratio" value={aspect} onChange={changeAspect}>
+                    <SegmentedControl label="Aspect ratio" value={aspect} onChange={changeAspect} isDisabled={cropConfirmed}>
                       {ASPECTS.map((a) => (
                         <SegmentedControlItem key={a.value} value={a.value} label={a.label} />
                       ))}
@@ -452,6 +465,7 @@ export default function App() {
                           id={`crop-${field}`}
                           type="number"
                           min={0}
+                          disabled={cropConfirmed}
                           value={Math.round(clip.crop[field])}
                           onChange={(e) => updateField(field, e.target.value)}
                         />
@@ -461,6 +475,21 @@ export default function App() {
                   <Text type="supporting">
                     Output size: {outRect.width} × {outRect.height} (adjusted to even numbers)
                   </Text>
+                  {cropConfirmed ? (
+                    <HStack gap={3} vAlign="center">
+                      <Button label="Edit crop" variant="secondary" onClick={editCrop} isDisabled={exporting} />
+                      <StackItem size="fill">
+                        <Text type="supporting">Crop confirmed. Use the video controls to preview playback.</Text>
+                      </StackItem>
+                    </HStack>
+                  ) : (
+                    <HStack gap={3} vAlign="center">
+                      <Button label="Confirm crop" variant="primary" onClick={confirmCrop} isDisabled={exporting} />
+                      <StackItem size="fill">
+                        <Text type="supporting">Confirm the crop to enable playback preview.</Text>
+                      </StackItem>
+                    </HStack>
+                  )}
                   {exporting ? (
                     <VStack gap={3}>
                       <div className="progress-track">
@@ -494,6 +523,7 @@ export default function App() {
                             return [];
                           });
                           setResultUrl(null);
+                          setCropConfirmed(false);
                           setError(null);
                           setNotice(null);
                         }}

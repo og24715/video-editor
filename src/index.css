@@ -86,6 +86,16 @@ body {
   touch-action: none;
 }
 
+.crop-rect.confirmed {
+  pointer-events: none;
+  cursor: default;
+}
+
+.crop-rect.confirmed .crop-handle {
+  pointer-events: none;
+  cursor: default;
+}
+
 .crop-handle {
   position: absolute;
   width: 16px;
@@ -138,6 +148,11 @@ body {
   font-size: 15px;
   width: 100%;
   box-sizing: border-box;
+}
+
+.field input:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
 }
 
 .meta-row {
