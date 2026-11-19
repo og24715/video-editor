@@ -5,14 +5,18 @@ these terms with these meanings.
 
 | Term | Meaning |
 | --- | --- |
-| **Media** | A source in the Media pool. Umbrella term: every Media is either a Video or an Image. Media itself is never edited; edits happen on Clips. |
+| **Media** | A source in the Media pool. Umbrella term: every Media is a Video, an Image, or an Audio. Media itself is never edited; edits happen on Clips. |
 | **Video** | A Media with a duration, a video track, and optionally audio (an MP4 file). |
 | **Image** | A still Media (PNG, JPEG, or WebP). It has dimensions but no duration of its own; on the timeline it is shown for its Clip's Duration. |
+| **Audio** | A Media with a duration and sound but no picture (for example WAV, MP3, M4A, OGG, or FLAC). It is decoded in the browser, shown with a Waveform, and placed on Audio tracks. |
 | **Clip** | A copy of a Media placed on a Track. Each Clip has its own Crop plus a Trim (Video) or a Duration (Image), independent of the source Media and of other Clips of the same Media. Called a timeline item in code (`TimelineItem`). |
 | **Text clip** | A Clip whose content is text rather than Media. It sits on an Overlay track and has a Duration and a text style (font size, color, outline, position) instead of a Crop and Trim. |
 | **Track** | One lane of the Timeline holding Clips. The bottom track is the Base track; tracks above it are Overlay tracks. |
-| **Base track** | The first track (V1). Its Clips play back-to-back in order, fill the Stage, and are the only source of audio in a Timeline export. |
+| **Base track** | The first track (V1). Its Clips play back-to-back in order and fill the Stage. Its audio is copied in a Timeline export when there are no Audio clips, and is mixed with the Audio clips when there are. |
 | **Overlay track** | Any track above the Base track (V2, V3, …). Its Clips sit at an explicit start time and rectangle on top of the Base track, picture-in-picture style, and are silent. |
+| **Audio track** | A Track below the video Tracks (A1, A2, …) that holds Audio clips at explicit start times. Audio tracks are mixed together and with the Base track's audio in a Timeline export. |
+| **Audio clip** | A Clip of an Audio Media on an Audio track. It has a Trim, a start time, a Gain, and a Waveform. |
+| **Waveform** | The min/max peak picture of an Audio Media, drawn in its pool card and in each Audio clip; trimming a clip windows the Waveform to the trimmed range. |
 | **Timeline** | All Tracks together, plus the Output size. The total duration is the longest track end. |
 | **Stage** | The preview area that shows the Timeline (or the active Media) at the current playhead. |
 | **Output** | The export frame size (width × height) of the Timeline. |
