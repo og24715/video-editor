@@ -2007,9 +2007,9 @@ export default function App() {
                         );
                       })}
                     <Text type="supporting">
-                      {fmtSec(tlPlayheadSec)} / {fmtSec(tlTotalSec)} · Click a block to select it; click a track to
+                      {fmtSec(tlPlayheadSec)} / {fmtSec(tlTotalSec)} · Click a clip to select it; click a track to
                       seek. Drag base clips to reorder them; drag overlay clips sideways to move them in time. Drag
-                      a block's edges to trim it; double-click a block to edit its crop and trim.
+                      a clip's edges to trim it; double-click a clip to edit its crop and trim.
                     </Text>
                   </div>
                 )}
@@ -2367,7 +2367,7 @@ export default function App() {
               </div>
             </div>
             <Text type="supporting">
-              Crop — {drawerItem ? `timeline item (V${drawerItem.trackIndex + 1})` : "this clip"}
+              Crop — {drawerItem ? `timeline item (V${drawerItem.trackIndex + 1})` : "this video"}
             </Text>
             <SegmentedControl label="Aspect ratio" value={aspect} onChange={changeAspect} isDisabled={exporting}>
               {ASPECTS.map((a) => (
@@ -2393,11 +2393,11 @@ export default function App() {
             </Text>
             <Text type="supporting">
               {drawerItem
-                ? "This crop belongs to this timeline item only; the clip's own crop is unchanged."
-                : "Crop applies to all uses of this clip."}
+                ? "This crop belongs to this timeline item only; the source video's crop is unchanged."
+                : "Crop applies to all uses of this video."}
             </Text>
             <Text type="supporting">
-              Trim — {drawerItem ? `timeline item (V${drawerItem.trackIndex + 1})` : "this clip"}
+              Trim — {drawerItem ? `timeline item (V${drawerItem.trackIndex + 1})` : "this video"}
             </Text>
             <div className="field-row">
               <div className="field">
@@ -2435,8 +2435,8 @@ export default function App() {
             </Text>
             <Text type="supporting">
               {drawerItem
-                ? "This trim belongs to this timeline item only; the clip's own trim is unchanged. Trimming an overlay item's head shifts it so the remaining content stays in place."
-                : "This is the clip's default trim: used by single-clip export, and copied into new timeline items."}
+                ? "This trim belongs to this timeline item only; the source video's trim is unchanged. Trimming an overlay item's head shifts it so the remaining content stays in place."
+                : "This is the video's default trim: used by single-clip export, and copied into new timeline items."}
             </Text>
           </VStack>
         )}
