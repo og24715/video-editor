@@ -2123,361 +2123,6 @@ export default function App() {
                     <Text type="supporting">Exporting… {Math.round(progress * 100)}%</Text>
                   </div>
                 )}
-                {tlHasItems && (
-                  <div
-                    className="tl-strip"
-                    onDragEnter={(e) => {
-                      const types = Array.from(e.dataTransfer.types);
-                      if (types.includes(POOL_DRAG_TYPE) || types.includes(TL_ITEM_DRAG_TYPE)) setTlGhostVisible(true);
-                    }}
-                    onDragOver={(e) => {
-                      const types = Array.from(e.dataTransfer.types);
-                      if (types.includes(POOL_DRAG_TYPE) || types.includes(TL_ITEM_DRAG_TYPE)) setTlGhostVisible(true);
-                    }}
-                    onDragLeave={(e) => {
-                      if (!e.currentTarget.contains(e.relatedTarget as Node | null)) {
-                        setTlGhostVisible(false);
-                        setTlGhostHot(false);
-                        setTlDropTarget(null);
-                      }
-                    }}
-                    onDrop={() => {
-                      setTlGhostVisible(false);
-                      setTlGhostHot(false);
-                      setTlDropTarget(null);
-                    }}
-                  >
-                    {tlDropTarget === "ghost" && (
-                      <div className="tl-ghost-pill">Drop here to start a new track</div>
-                    )}
-                    {tlGhostVisible && (
-                      <div className="tl-row">
-                        <div className="tl-row-label">New</div>
-                        <div
-                          className={`tl-row-track tl-ghost-track${tlGhostHot || tlDropTarget === "ghost" ? " hot" : ""}`}
-                          data-tl-ghost="true"
-                          onDragOver={(e) => {
-                            const types = Array.from(e.dataTransfer.types);
-                            if (types.includes(POOL_DRAG_TYPE) || types.includes(TL_ITEM_DRAG_TYPE)) {
-                              e.preventDefault();
-                              e.dataTransfer.dropEffect = types.includes(POOL_DRAG_TYPE) ? "copy" : "move";
-                              setTlGhostHot(true);
-                            }
-                          }}
-                          onDragLeave={() => setTlGhostHot(false)}
-                          onDrop={(e) => {
-                            const types = Array.from(e.dataTransfer.types);
-                            if (types.includes(TL_ITEM_DRAG_TYPE)) {
-                              const itemId = e.dataTransfer.getData(TL_ITEM_DRAG_TYPE);
-                              if (!itemId) return;
-                              e.preventDefault();
-                              moveBaseItemToNewTrack(itemId);
-                              return;
-                            }
-                            const droppedClipId =
-                              e.dataTransfer.getData(POOL_DRAG_TYPE) || e.dataTransfer.getData("text/plain");
-                            if (!droppedClipId || !clipsRef.current.some((c) => c.id === droppedClipId)) return;
-                            e.preventDefault();
-                            const rect = e.currentTarget.getBoundingClientRect();
-                            const frac =
-                              rect.width > 0 ? Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width)) : 0;
-                            addClipToNewTrack(droppedClipId, frac * tlTotalSec);
-                          }}
-                        >
-                          <div className="tl-ghost-hint">Drop here to start a new track</div>
-                        </div>
-                      </div>
-                    )}
-                    {tlLayout.tracks
-                      .slice()
-                      .reverse()
-                      .map((trackLayout) => {
-                        const trackIndex = tlLayout.tracks.findIndex((t) => t.track.id === trackLayout.track.id);
-                        return (
-                          <div className="tl-row" key={trackLayout.track.id}>
-                            <div className="tl-row-label">{trackIndex === 0 ? "V1 · Base" : `V${trackIndex + 1}`}</div>
-                            <div
-                              className={`tl-row-track${tlDropTarget === trackIndex ? " drop-target" : ""}`}
-                              data-tl-row={trackIndex}
-                              onPointerDown={(e) => {
-                                if (exporting || tlTotalSec <= 0) return;
-                                const rect = e.currentTarget.getBoundingClientRect();
-                                if (rect.width === 0) return;
-                                seekTlTo(((e.clientX - rect.left) / rect.width) * tlTotalSec);
-                              }}
-                              onDragOver={(e) => {
-                                const types = Array.from(e.dataTransfer.types);
-                                if (types.includes(POOL_DRAG_TYPE) || types.includes(TL_ITEM_DRAG_TYPE)) {
-                                  e.preventDefault();
-                                  e.dataTransfer.dropEffect = types.includes(POOL_DRAG_TYPE) ? "copy" : "move";
-                                  if (types.includes(TL_ITEM_DRAG_TYPE)) setTlDropTarget(trackIndex);
-                                }
-                              }}
-                              onDrop={(e) => {
-                                const types = Array.from(e.dataTransfer.types);
-                                const rowEl = e.currentTarget;
-                                setTlDropTarget(null);
-                                if (trackIndex === 0 && types.includes(TL_ITEM_DRAG_TYPE)) {
-                                  const itemId = e.dataTransfer.getData(TL_ITEM_DRAG_TYPE);
-                                  if (!itemId) return;
-                                  e.preventDefault();
-                                  reorderBaseItem(itemId, baseInsertIndex(rowEl, e.clientX));
-                                  return;
-                                }
-                                if (trackIndex > 0 && types.includes(TL_ITEM_DRAG_TYPE)) {
-                                  const itemId = e.dataTransfer.getData(TL_ITEM_DRAG_TYPE);
-                                  if (!itemId) return;
-                                  e.preventDefault();
-                                  moveBaseItemToTrack(itemId, trackIndex);
-                                  return;
-                                }
-                                if (types.includes(POOL_DRAG_TYPE)) {
-                                  const droppedClipId =
-                                    e.dataTransfer.getData(POOL_DRAG_TYPE) || e.dataTransfer.getData("text/plain");
-                                  if (!droppedClipId || !clipsRef.current.some((c) => c.id === droppedClipId)) return;
-                                  e.preventDefault();
-                                  if (trackIndex === 0) {
-                                    addClipToBase(droppedClipId, baseInsertIndex(rowEl, e.clientX));
-                                  } else {
-                                    const rect = rowEl.getBoundingClientRect();
-                                    const frac =
-                                      rect.width > 0 ? Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width)) : 0;
-                                    addClipToOverlay(droppedClipId, trackIndex, frac * tlTotalSec);
-                                  }
-                                }
-                              }}
-                            >
-                              {trackIndex === 0 &&
-                                trackLayout.items.map((entry) => {
-                                  const entryClip = entry.clip;
-                                  if (!entryClip) return null;
-                                  return (
-                                  <div
-                                    key={entry.item.id}
-                                    className={`tl-block${entry.item.id === selectedTlItemId ? " selected" : ""}`}
-                                    data-tl-block={entry.item.id}
-                                    data-tl-item={entry.item.id}
-                                    style={{ flexGrow: Math.max(entry.durationSec, 0.1), flexBasis: 0 }}
-                                    draggable={!exporting}
-                                    onDragStart={(e) => {
-                                      e.dataTransfer.setData(TL_ITEM_DRAG_TYPE, entry.item.id);
-                                      e.dataTransfer.effectAllowed = "move";
-                                    }}
-                                    onDragEnd={() => {
-                                      setTlGhostVisible(false);
-                                      setTlGhostHot(false);
-                                      setTlDropTarget(null);
-                                    }}
-                                    onPointerDown={() => setSelectedTlItemId(entry.item.id)}
-                                    onClick={() => setSelectedTlItemId(entry.item.id)}
-                                    onDoubleClick={() => {
-                                      setCropClipId(entryClip.id);
-                                      setDrawerItemId(entry.item.id);
-                                    }}
-                                  >
-                                    <div className="tl-thumbs">
-                                      {entryClip.kind === "image" ? (
-                                        <img className="tl-block-img" src={entryClip.url} alt="" draggable={false} />
-                                      ) : (
-                                        (
-                                          tlThumbs[`${entryClip.id}|${entry.item.trim.startSec}|${entry.item.trim.endSec}`] ??
-                                          []
-                                        ).map((src, i) => (
-                                          <img key={i} src={src} alt="" draggable={false} />
-                                        ))
-                                      )}
-                                    </div>
-                                    <div className="tl-block-label">
-                                      {entryClip.file.name} · {fmtSec(entry.durationSec)}
-                                    </div>
-                                    {entryClip.kind === "video" && (
-                                      <div
-                                        className="tl-block-edge left"
-                                        data-tl-edge="start"
-                                        onPointerDown={(e) => beginTlEdgeDrag(e, 0, entry, "start")}
-                                        onPointerMove={onTlEdgeDragMove}
-                                        onPointerUp={endTlEdgeDrag}
-                                        onPointerCancel={endTlEdgeDrag}
-                                      />
-                                    )}
-                                    <div
-                                      className="tl-block-edge right"
-                                      data-tl-edge="end"
-                                      onPointerDown={(e) => beginTlEdgeDrag(e, 0, entry, "end")}
-                                      onPointerMove={onTlEdgeDragMove}
-                                      onPointerUp={endTlEdgeDrag}
-                                      onPointerCancel={endTlEdgeDrag}
-                                    />
-                                    <button
-                                      type="button"
-                                      className="tl-block-remove"
-                                      aria-label="Remove from timeline"
-                                      onPointerDown={(e) => e.stopPropagation()}
-                                      onClick={(e) => {
-                                        e.stopPropagation();
-                                        removeTlItem(0, entry.item.id);
-                                      }}
-                                    >
-                                      ×
-                                    </button>
-                                  </div>
-                                  );
-                                })}
-                              {trackIndex > 0 &&
-                                trackLayout.items.map((entry) => {
-                                  const isSelected = entry.item.id === selectedTlItemId;
-                                  const blockStyle = {
-                                    left: `${tlTotalSec > 0 ? (entry.startSec / tlTotalSec) * 100 : 0}%`,
-                                    width: `${tlTotalSec > 0 ? (entry.durationSec / tlTotalSec) * 100 : 0}%`,
-                                  };
-                                  if (entry.item.kind === "text") {
-                                    const firstLine = (entry.item.text ?? "").split("\n")[0] || "Text";
-                                    return (
-                                      <div
-                                        key={entry.item.id}
-                                        className={`tl-block tl-block-overlay tl-block-text${isSelected ? " selected" : ""}`}
-                                        data-tl-block={entry.item.id}
-                                        data-tl-item={entry.item.id}
-                                        style={blockStyle}
-                                        onPointerDown={(e) => beginTlBlockDrag(e, trackIndex, entry)}
-                                        onClick={() => setSelectedTlItemId(entry.item.id)}
-                                        onDoubleClick={() => {
-                                          setCropClipId(null);
-                                          setDrawerItemId(null);
-                                          setDrawerTextItemId(entry.item.id);
-                                        }}
-                                        onPointerMove={onTlBlockDragMove}
-                                        onPointerUp={endTlBlockDrag}
-                                        onPointerCancel={endTlBlockDrag}
-                                      >
-                                        <div className="tl-thumbs">
-                                          <span className="tl-text-glyph">
-                                            <Type size={20} />
-                                          </span>
-                                        </div>
-                                        <div className="tl-block-label">
-                                          {firstLine} · {fmtSec(entry.durationSec)}
-                                        </div>
-                                        <div
-                                          className="tl-block-edge left"
-                                          data-tl-edge="start"
-                                          onPointerDown={(e) => beginTlEdgeDrag(e, trackIndex, entry, "start")}
-                                          onPointerMove={onTlEdgeDragMove}
-                                          onPointerUp={endTlEdgeDrag}
-                                          onPointerCancel={endTlEdgeDrag}
-                                        />
-                                        <div
-                                          className="tl-block-edge right"
-                                          data-tl-edge="end"
-                                          onPointerDown={(e) => beginTlEdgeDrag(e, trackIndex, entry, "end")}
-                                          onPointerMove={onTlEdgeDragMove}
-                                          onPointerUp={endTlEdgeDrag}
-                                          onPointerCancel={endTlEdgeDrag}
-                                        />
-                                        <button
-                                          type="button"
-                                          className="tl-block-remove"
-                                          aria-label="Remove from timeline"
-                                          onPointerDown={(e) => e.stopPropagation()}
-                                          onClick={(e) => {
-                                            e.stopPropagation();
-                                            removeTlItem(trackIndex, entry.item.id);
-                                          }}
-                                        >
-                                          ×
-                                        </button>
-                                      </div>
-                                    );
-                                  }
-                                  const entryClip = entry.clip;
-                                  if (!entryClip) return null;
-                                  return (
-                                    <div
-                                      key={entry.item.id}
-                                      className={`tl-block tl-block-overlay${isSelected ? " selected" : ""}`}
-                                      data-tl-block={entry.item.id}
-                                      data-tl-item={entry.item.id}
-                                      style={blockStyle}
-                                      onPointerDown={(e) => beginTlBlockDrag(e, trackIndex, entry)}
-                                      onClick={() => setSelectedTlItemId(entry.item.id)}
-                                      onDoubleClick={() => {
-                                        setCropClipId(entryClip.id);
-                                        setDrawerItemId(entry.item.id);
-                                      }}
-                                      onPointerMove={onTlBlockDragMove}
-                                      onPointerUp={endTlBlockDrag}
-                                      onPointerCancel={endTlBlockDrag}
-                                    >
-                                      <div className="tl-thumbs">
-                                        {entryClip.kind === "image" ? (
-                                          <img className="tl-block-img" src={entryClip.url} alt="" draggable={false} />
-                                        ) : (
-                                          (
-                                            tlThumbs[
-                                              `${entryClip.id}|${entry.item.trim.startSec}|${entry.item.trim.endSec}`
-                                            ] ?? []
-                                          ).map((src, i) => (
-                                            <img key={i} src={src} alt="" draggable={false} />
-                                          ))
-                                        )}
-                                      </div>
-                                      <div className="tl-block-label">
-                                        {entryClip.file.name} · {fmtSec(entry.durationSec)}
-                                      </div>
-                                      <div
-                                        className="tl-block-edge left"
-                                        data-tl-edge="start"
-                                        onPointerDown={(e) => beginTlEdgeDrag(e, trackIndex, entry, "start")}
-                                        onPointerMove={onTlEdgeDragMove}
-                                        onPointerUp={endTlEdgeDrag}
-                                        onPointerCancel={endTlEdgeDrag}
-                                      />
-                                      <div
-                                        className="tl-block-edge right"
-                                        data-tl-edge="end"
-                                        onPointerDown={(e) => beginTlEdgeDrag(e, trackIndex, entry, "end")}
-                                        onPointerMove={onTlEdgeDragMove}
-                                        onPointerUp={endTlEdgeDrag}
-                                        onPointerCancel={endTlEdgeDrag}
-                                      />
-                                      <button
-                                        type="button"
-                                        className="tl-block-remove"
-                                        aria-label="Remove from timeline"
-                                        onPointerDown={(e) => e.stopPropagation()}
-                                        onClick={(e) => {
-                                          e.stopPropagation();
-                                          removeTlItem(trackIndex, entry.item.id);
-                                        }}
-                                      >
-                                        ×
-                                      </button>
-                                    </div>
-                                  );
-                                })}
-                              {trackLayout.items.length === 0 && (
-                                <div className="tl-row-empty">
-                                  {trackIndex === 0
-                                    ? "Drop media here, or use Add to timeline in the panel."
-                                    : "Drop media here to overlay it."}
-                                </div>
-                              )}
-                              <div
-                                className="tl-playhead"
-                                style={{ left: `${tlTotalSec > 0 ? (tlPlayheadSec / tlTotalSec) * 100 : 0}%` }}
-                              />
-                            </div>
-                          </div>
-                        );
-                      })}
-                    <Text type="supporting">
-                      {fmtSec(tlPlayheadSec)} / {fmtSec(tlTotalSec)} · Click a clip to select it; click a track to
-                      seek. Drag base clips to reorder them; drag overlay clips sideways to move them in time, or
-                      drag any clip up or down to move it to another track. Drag a clip's edges to trim it (an
-                      image or text clip's right edge sets its duration); double-click a clip to edit it.
-                    </Text>
-                  </div>
-                )}
                 <div className="panel">
                   <div className="meta-row">
                     <Text type="supporting">File: {clip.file.name}</Text>
@@ -2876,6 +2521,363 @@ export default function App() {
                 </div>
               </div>
             )}
+              <div
+                className="tl-strip"
+                onDragEnter={(e) => {
+                  const types = Array.from(e.dataTransfer.types);
+                  if (types.includes(POOL_DRAG_TYPE) || types.includes(TL_ITEM_DRAG_TYPE)) setTlGhostVisible(true);
+                }}
+                onDragOver={(e) => {
+                  const types = Array.from(e.dataTransfer.types);
+                  if (types.includes(POOL_DRAG_TYPE) || types.includes(TL_ITEM_DRAG_TYPE)) setTlGhostVisible(true);
+                }}
+                onDragLeave={(e) => {
+                  if (!e.currentTarget.contains(e.relatedTarget as Node | null)) {
+                    setTlGhostVisible(false);
+                    setTlGhostHot(false);
+                    setTlDropTarget(null);
+                  }
+                }}
+                onDrop={() => {
+                  setTlGhostVisible(false);
+                  setTlGhostHot(false);
+                  setTlDropTarget(null);
+                }}
+              >
+                {tlDropTarget === "ghost" && (
+                  <div className="tl-ghost-pill">Drop here to start a new track</div>
+                )}
+                {tlGhostVisible && (
+                  <div className="tl-row">
+                    <div className="tl-row-label">New</div>
+                    <div
+                      className={`tl-row-track tl-ghost-track${tlGhostHot || tlDropTarget === "ghost" ? " hot" : ""}`}
+                      data-tl-ghost="true"
+                      onDragOver={(e) => {
+                        const types = Array.from(e.dataTransfer.types);
+                        if (types.includes(POOL_DRAG_TYPE) || types.includes(TL_ITEM_DRAG_TYPE)) {
+                          e.preventDefault();
+                          e.dataTransfer.dropEffect = types.includes(POOL_DRAG_TYPE) ? "copy" : "move";
+                          setTlGhostHot(true);
+                        }
+                      }}
+                      onDragLeave={() => setTlGhostHot(false)}
+                      onDrop={(e) => {
+                        const types = Array.from(e.dataTransfer.types);
+                        if (types.includes(TL_ITEM_DRAG_TYPE)) {
+                          const itemId = e.dataTransfer.getData(TL_ITEM_DRAG_TYPE);
+                          if (!itemId) return;
+                          e.preventDefault();
+                          moveBaseItemToNewTrack(itemId);
+                          return;
+                        }
+                        const droppedClipId =
+                          e.dataTransfer.getData(POOL_DRAG_TYPE) || e.dataTransfer.getData("text/plain");
+                        if (!droppedClipId || !clipsRef.current.some((c) => c.id === droppedClipId)) return;
+                        e.preventDefault();
+                        const rect = e.currentTarget.getBoundingClientRect();
+                        const frac =
+                          rect.width > 0 ? Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width)) : 0;
+                        addClipToNewTrack(droppedClipId, frac * tlTotalSec);
+                      }}
+                    >
+                      <div className="tl-ghost-hint">Drop here to start a new track</div>
+                    </div>
+                  </div>
+                )}
+                {tlLayout.tracks
+                  .slice()
+                  .reverse()
+                  .map((trackLayout) => {
+                    const trackIndex = tlLayout.tracks.findIndex((t) => t.track.id === trackLayout.track.id);
+                    return (
+                      <div className="tl-row" key={trackLayout.track.id}>
+                        <div className="tl-row-label">{trackIndex === 0 ? "V1 · Base" : `V${trackIndex + 1}`}</div>
+                        <div
+                          className={`tl-row-track${tlDropTarget === trackIndex ? " drop-target" : ""}`}
+                          data-tl-row={trackIndex}
+                          onPointerDown={(e) => {
+                            if (exporting || tlTotalSec <= 0) return;
+                            const rect = e.currentTarget.getBoundingClientRect();
+                            if (rect.width === 0) return;
+                            seekTlTo(((e.clientX - rect.left) / rect.width) * tlTotalSec);
+                          }}
+                          onDragOver={(e) => {
+                            const types = Array.from(e.dataTransfer.types);
+                            if (types.includes(POOL_DRAG_TYPE) || types.includes(TL_ITEM_DRAG_TYPE)) {
+                              e.preventDefault();
+                              e.dataTransfer.dropEffect = types.includes(POOL_DRAG_TYPE) ? "copy" : "move";
+                              if (types.includes(TL_ITEM_DRAG_TYPE)) setTlDropTarget(trackIndex);
+                            }
+                          }}
+                          onDrop={(e) => {
+                            const types = Array.from(e.dataTransfer.types);
+                            const rowEl = e.currentTarget;
+                            setTlDropTarget(null);
+                            if (trackIndex === 0 && types.includes(TL_ITEM_DRAG_TYPE)) {
+                              const itemId = e.dataTransfer.getData(TL_ITEM_DRAG_TYPE);
+                              if (!itemId) return;
+                              e.preventDefault();
+                              reorderBaseItem(itemId, baseInsertIndex(rowEl, e.clientX));
+                              return;
+                            }
+                            if (trackIndex > 0 && types.includes(TL_ITEM_DRAG_TYPE)) {
+                              const itemId = e.dataTransfer.getData(TL_ITEM_DRAG_TYPE);
+                              if (!itemId) return;
+                              e.preventDefault();
+                              moveBaseItemToTrack(itemId, trackIndex);
+                              return;
+                            }
+                            if (types.includes(POOL_DRAG_TYPE)) {
+                              const droppedClipId =
+                                e.dataTransfer.getData(POOL_DRAG_TYPE) || e.dataTransfer.getData("text/plain");
+                              if (!droppedClipId || !clipsRef.current.some((c) => c.id === droppedClipId)) return;
+                              e.preventDefault();
+                              if (trackIndex === 0) {
+                                addClipToBase(droppedClipId, baseInsertIndex(rowEl, e.clientX));
+                              } else {
+                                const rect = rowEl.getBoundingClientRect();
+                                const frac =
+                                  rect.width > 0 ? Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width)) : 0;
+                                addClipToOverlay(droppedClipId, trackIndex, frac * tlTotalSec);
+                              }
+                            }
+                          }}
+                        >
+                          {trackIndex === 0 &&
+                            trackLayout.items.map((entry) => {
+                              const entryClip = entry.clip;
+                              if (!entryClip) return null;
+                              return (
+                              <div
+                                key={entry.item.id}
+                                className={`tl-block${entry.item.id === selectedTlItemId ? " selected" : ""}`}
+                                data-tl-block={entry.item.id}
+                                data-tl-item={entry.item.id}
+                                style={{ flexGrow: Math.max(entry.durationSec, 0.1), flexBasis: 0 }}
+                                draggable={!exporting}
+                                onDragStart={(e) => {
+                                  e.dataTransfer.setData(TL_ITEM_DRAG_TYPE, entry.item.id);
+                                  e.dataTransfer.effectAllowed = "move";
+                                }}
+                                onDragEnd={() => {
+                                  setTlGhostVisible(false);
+                                  setTlGhostHot(false);
+                                  setTlDropTarget(null);
+                                }}
+                                onPointerDown={() => setSelectedTlItemId(entry.item.id)}
+                                onClick={() => setSelectedTlItemId(entry.item.id)}
+                                onDoubleClick={() => {
+                                  setCropClipId(entryClip.id);
+                                  setDrawerItemId(entry.item.id);
+                                }}
+                              >
+                                <div className="tl-thumbs">
+                                  {entryClip.kind === "image" ? (
+                                    <img className="tl-block-img" src={entryClip.url} alt="" draggable={false} />
+                                  ) : (
+                                    (
+                                      tlThumbs[`${entryClip.id}|${entry.item.trim.startSec}|${entry.item.trim.endSec}`] ??
+                                      []
+                                    ).map((src, i) => (
+                                      <img key={i} src={src} alt="" draggable={false} />
+                                    ))
+                                  )}
+                                </div>
+                                <div className="tl-block-label">
+                                  {entryClip.file.name} · {fmtSec(entry.durationSec)}
+                                </div>
+                                {entryClip.kind === "video" && (
+                                  <div
+                                    className="tl-block-edge left"
+                                    data-tl-edge="start"
+                                    onPointerDown={(e) => beginTlEdgeDrag(e, 0, entry, "start")}
+                                    onPointerMove={onTlEdgeDragMove}
+                                    onPointerUp={endTlEdgeDrag}
+                                    onPointerCancel={endTlEdgeDrag}
+                                  />
+                                )}
+                                <div
+                                  className="tl-block-edge right"
+                                  data-tl-edge="end"
+                                  onPointerDown={(e) => beginTlEdgeDrag(e, 0, entry, "end")}
+                                  onPointerMove={onTlEdgeDragMove}
+                                  onPointerUp={endTlEdgeDrag}
+                                  onPointerCancel={endTlEdgeDrag}
+                                />
+                                <button
+                                  type="button"
+                                  className="tl-block-remove"
+                                  aria-label="Remove from timeline"
+                                  onPointerDown={(e) => e.stopPropagation()}
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    removeTlItem(0, entry.item.id);
+                                  }}
+                                >
+                                  ×
+                                </button>
+                              </div>
+                              );
+                            })}
+                          {trackIndex > 0 &&
+                            trackLayout.items.map((entry) => {
+                              const isSelected = entry.item.id === selectedTlItemId;
+                              const blockStyle = {
+                                left: `${tlTotalSec > 0 ? (entry.startSec / tlTotalSec) * 100 : 0}%`,
+                                width: `${tlTotalSec > 0 ? (entry.durationSec / tlTotalSec) * 100 : 0}%`,
+                              };
+                              if (entry.item.kind === "text") {
+                                const firstLine = (entry.item.text ?? "").split("\n")[0] || "Text";
+                                return (
+                                  <div
+                                    key={entry.item.id}
+                                    className={`tl-block tl-block-overlay tl-block-text${isSelected ? " selected" : ""}`}
+                                    data-tl-block={entry.item.id}
+                                    data-tl-item={entry.item.id}
+                                    style={blockStyle}
+                                    onPointerDown={(e) => beginTlBlockDrag(e, trackIndex, entry)}
+                                    onClick={() => setSelectedTlItemId(entry.item.id)}
+                                    onDoubleClick={() => {
+                                      setCropClipId(null);
+                                      setDrawerItemId(null);
+                                      setDrawerTextItemId(entry.item.id);
+                                    }}
+                                    onPointerMove={onTlBlockDragMove}
+                                    onPointerUp={endTlBlockDrag}
+                                    onPointerCancel={endTlBlockDrag}
+                                  >
+                                    <div className="tl-thumbs">
+                                      <span className="tl-text-glyph">
+                                        <Type size={20} />
+                                      </span>
+                                    </div>
+                                    <div className="tl-block-label">
+                                      {firstLine} · {fmtSec(entry.durationSec)}
+                                    </div>
+                                    <div
+                                      className="tl-block-edge left"
+                                      data-tl-edge="start"
+                                      onPointerDown={(e) => beginTlEdgeDrag(e, trackIndex, entry, "start")}
+                                      onPointerMove={onTlEdgeDragMove}
+                                      onPointerUp={endTlEdgeDrag}
+                                      onPointerCancel={endTlEdgeDrag}
+                                    />
+                                    <div
+                                      className="tl-block-edge right"
+                                      data-tl-edge="end"
+                                      onPointerDown={(e) => beginTlEdgeDrag(e, trackIndex, entry, "end")}
+                                      onPointerMove={onTlEdgeDragMove}
+                                      onPointerUp={endTlEdgeDrag}
+                                      onPointerCancel={endTlEdgeDrag}
+                                    />
+                                    <button
+                                      type="button"
+                                      className="tl-block-remove"
+                                      aria-label="Remove from timeline"
+                                      onPointerDown={(e) => e.stopPropagation()}
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        removeTlItem(trackIndex, entry.item.id);
+                                      }}
+                                    >
+                                      ×
+                                    </button>
+                                  </div>
+                                );
+                              }
+                              const entryClip = entry.clip;
+                              if (!entryClip) return null;
+                              return (
+                                <div
+                                  key={entry.item.id}
+                                  className={`tl-block tl-block-overlay${isSelected ? " selected" : ""}`}
+                                  data-tl-block={entry.item.id}
+                                  data-tl-item={entry.item.id}
+                                  style={blockStyle}
+                                  onPointerDown={(e) => beginTlBlockDrag(e, trackIndex, entry)}
+                                  onClick={() => setSelectedTlItemId(entry.item.id)}
+                                  onDoubleClick={() => {
+                                    setCropClipId(entryClip.id);
+                                    setDrawerItemId(entry.item.id);
+                                  }}
+                                  onPointerMove={onTlBlockDragMove}
+                                  onPointerUp={endTlBlockDrag}
+                                  onPointerCancel={endTlBlockDrag}
+                                >
+                                  <div className="tl-thumbs">
+                                    {entryClip.kind === "image" ? (
+                                      <img className="tl-block-img" src={entryClip.url} alt="" draggable={false} />
+                                    ) : (
+                                      (
+                                        tlThumbs[
+                                          `${entryClip.id}|${entry.item.trim.startSec}|${entry.item.trim.endSec}`
+                                        ] ?? []
+                                      ).map((src, i) => (
+                                        <img key={i} src={src} alt="" draggable={false} />
+                                      ))
+                                    )}
+                                  </div>
+                                  <div className="tl-block-label">
+                                    {entryClip.file.name} · {fmtSec(entry.durationSec)}
+                                  </div>
+                                  <div
+                                    className="tl-block-edge left"
+                                    data-tl-edge="start"
+                                    onPointerDown={(e) => beginTlEdgeDrag(e, trackIndex, entry, "start")}
+                                    onPointerMove={onTlEdgeDragMove}
+                                    onPointerUp={endTlEdgeDrag}
+                                    onPointerCancel={endTlEdgeDrag}
+                                  />
+                                  <div
+                                    className="tl-block-edge right"
+                                    data-tl-edge="end"
+                                    onPointerDown={(e) => beginTlEdgeDrag(e, trackIndex, entry, "end")}
+                                    onPointerMove={onTlEdgeDragMove}
+                                    onPointerUp={endTlEdgeDrag}
+                                    onPointerCancel={endTlEdgeDrag}
+                                  />
+                                  <button
+                                    type="button"
+                                    className="tl-block-remove"
+                                    aria-label="Remove from timeline"
+                                    onPointerDown={(e) => e.stopPropagation()}
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      removeTlItem(trackIndex, entry.item.id);
+                                    }}
+                                  >
+                                    ×
+                                  </button>
+                                </div>
+                              );
+                            })}
+                          {trackLayout.items.length === 0 && (
+                            <div className="tl-row-empty">
+                              {trackIndex === 0
+                                ? "Drop media here."
+                                : "Drop media here to overlay it."}
+                            </div>
+                          )}
+                          {tlTotalSec > 0 && (
+                            <div
+                              className="tl-playhead"
+                              style={{ left: `${(tlPlayheadSec / tlTotalSec) * 100}%` }}
+                            />
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })}
+                {tlHasItems && (
+                  <Text type="supporting">
+                  {fmtSec(tlPlayheadSec)} / {fmtSec(tlTotalSec)} · Click a clip to select it; click a track to
+                  seek. Drag base clips to reorder them; drag overlay clips sideways to move them in time, or
+                  drag any clip up or down to move it to another track. Drag a clip's edges to trim it (an
+                  image or text clip's right edge sets its duration); double-click a clip to edit it.
+                </Text>
+                )}
+              </div>
           </VStack>
             </div>
           </div>
