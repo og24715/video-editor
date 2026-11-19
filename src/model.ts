@@ -101,6 +101,56 @@ export function sideBySideLayout(
   };
 }
 
+function clampOutputSize(value: number): number {
+  if (!Number.isFinite(value)) return 16;
+  const clamped = Math.max(16, Math.min(7680, Math.round(value)));
+  return clamped - (clamped % 2);
+}
+
+function fitTileToCanvas(scaled: TileRect, aspect: number, outputWidth: number, outputHeight: number): TileRect {
+  let width = Math.max(16, Math.round(scaled.width));
+  let height = Math.max(16, Math.round(width / aspect));
+  if (width > outputWidth) {
+    width = outputWidth;
+    height = Math.max(16, Math.round(width / aspect));
+  }
+  if (height > outputHeight) {
+    height = outputHeight;
+    width = Math.max(16, Math.round(height * aspect));
+    if (width > outputWidth) width = outputWidth;
+  }
+  const centerX = scaled.x + scaled.width / 2;
+  const centerY = scaled.y + scaled.height / 2;
+  const x = Math.round(Math.max(0, Math.min(centerX - width / 2, Math.max(0, outputWidth - width))));
+  const y = Math.round(Math.max(0, Math.min(centerY - height / 2, Math.max(0, outputHeight - height))));
+  return { x, y, width, height };
+}
+
+export function resizedLayout(
+  geometry: LayoutGeometry,
+  newWidth: number,
+  newHeight: number,
+  mainAspect: number,
+  secondAspect: number,
+): LayoutGeometry {
+  const outputWidth = clampOutputSize(newWidth);
+  const outputHeight = clampOutputSize(newHeight);
+  const scaleX = outputWidth / geometry.outputWidth;
+  const scaleY = outputHeight / geometry.outputHeight;
+  const scaleTile = (tile: TileRect): TileRect => ({
+    x: tile.x * scaleX,
+    y: tile.y * scaleY,
+    width: tile.width * scaleX,
+    height: tile.height * scaleY,
+  });
+  return {
+    outputWidth,
+    outputHeight,
+    tileA: fitTileToCanvas(scaleTile(geometry.tileA), mainAspect > 0 ? mainAspect : 16 / 9, outputWidth, outputHeight),
+    tileB: fitTileToCanvas(scaleTile(geometry.tileB), secondAspect > 0 ? secondAspect : 16 / 9, outputWidth, outputHeight),
+  };
+}
+
 export function pipLayout(mainWidth: number, mainHeight: number, secondWidth: number, secondHeight: number): LayoutGeometry {
   const outputWidth = evenDown(mainWidth);
   const outputHeight = evenDown(mainHeight);

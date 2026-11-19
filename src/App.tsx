@@ -11,7 +11,7 @@ import { StackItem } from "@astryxdesign/core/Stack";
 import { Spinner } from "@astryxdesign/core/Spinner";
 import { Clapperboard, FolderOpen } from "lucide-react";
 import type { ActiveTool, AspectPreset, Clip, CropRect, LayoutState, TileRect, ToolId, TrimRange } from "./model";
-import { evenRect, pipLayout, sideBySideLayout } from "./model";
+import { evenRect, pipLayout, resizedLayout, sideBySideLayout } from "./model";
 import { ExportCancelledError, exportCropped, openInput, readMeta, webCodecsSupported } from "./exporter";
 import { exportComposite } from "./compositeExporter";
 import { exportGif, gifOutputSize } from "./gifExporter";
@@ -171,6 +171,8 @@ export default function App() {
   const [secondClip, setSecondClip] = useState<Clip | null>(null);
   const [layout, setLayout] = useState<LayoutState | null>(null);
   const [layoutPlaying, setLayoutPlaying] = useState(false);
+  const [outWText, setOutWText] = useState("");
+  const [outHText, setOutHText] = useState("");
   const [thumbs, setThumbs] = useState<string[]>([]);
   const thumbsClipRef = useRef<string | null>(null);
   const timelineRef = useRef<HTMLDivElement | null>(null);
@@ -206,6 +208,13 @@ export default function App() {
   if (secondClip) {
     secondTrimRef.current = secondClip.trim;
   }
+
+  useEffect(() => {
+    if (layout) {
+      setOutWText(String(layout.outputWidth));
+      setOutHText(String(layout.outputHeight));
+    }
+  }, [layout?.outputWidth, layout?.outputHeight]);
 
   const setCrop = useCallback(
     (crop: CropRect) => {
@@ -627,6 +636,33 @@ export default function App() {
     setLayout({ ...layout, ...geometry });
   };
 
+  const applyOutputSize = (newWidth: number, newHeight: number) => {
+    if (!clip || !secondClip || !layout) return;
+    const mainOut = evenRect(clip.crop, clip.meta.width, clip.meta.height);
+    const geometry = resizedLayout(
+      layout,
+      newWidth,
+      newHeight,
+      mainOut.width / mainOut.height,
+      secondClip.meta.width / secondClip.meta.height,
+    );
+    setLayout({ ...layout, ...geometry });
+  };
+
+  const commitOutputSize = (event?: React.FocusEvent<HTMLInputElement>) => {
+    const next = event?.relatedTarget as HTMLElement | null;
+    if (next && (next.id === "layout-output-width" || next.id === "layout-output-height")) return;
+    if (!layout) return;
+    const width = Number(outWText);
+    const height = Number(outHText);
+    if (Number.isFinite(width) && Number.isFinite(height) && width > 0 && height > 0) {
+      applyOutputSize(width, height);
+    } else {
+      setOutWText(String(layout.outputWidth));
+      setOutHText(String(layout.outputHeight));
+    }
+  };
+
   const beginTileDrag = (event: React.PointerEvent, tile: "a" | "b", mode: "move" | "resize") => {
     if (!layout || exporting || !layoutActive) return;
     event.preventDefault();
@@ -954,6 +990,8 @@ export default function App() {
         ? "Audio copied without re-encoding"
         : "Audio could not be copied"
       : "No audio track";
+  const isLargeCanvas =
+    layout !== null && (layout.outputWidth > 3840 || layout.outputWidth * layout.outputHeight > 8_300_000);
   const isFullFrame =
     clip !== null &&
     Math.round(clip.crop.x) === 0 &&
@@ -1408,6 +1446,54 @@ export default function App() {
                         <Button label="Side by side" variant="secondary" onClick={() => applyPreset("side")} isDisabled={exporting} />
                         <Button label="Picture in picture" variant="secondary" onClick={() => applyPreset("pip")} isDisabled={exporting} />
                       </HStack>
+                      <div className="field-row">
+                        <div className="field">
+                          <label htmlFor="layout-output-width">Output width</label>
+                          <input
+                            id="layout-output-width"
+                            type="number"
+                            min={16}
+                            max={7680}
+                            step={2}
+                            value={outWText}
+                            disabled={exporting}
+                            onChange={(e) => setOutWText(e.target.value)}
+                            onBlur={(e) => commitOutputSize(e)}
+                            onKeyDown={(e) => {
+                              if (e.key === "Enter") (e.target as HTMLInputElement).blur();
+                            }}
+                          />
+                        </div>
+                        <div className="field">
+                          <label htmlFor="layout-output-height">Output height</label>
+                          <input
+                            id="layout-output-height"
+                            type="number"
+                            min={16}
+                            max={7680}
+                            step={2}
+                            value={outHText}
+                            disabled={exporting}
+                            onChange={(e) => setOutHText(e.target.value)}
+                            onBlur={(e) => commitOutputSize(e)}
+                            onKeyDown={(e) => {
+                              if (e.key === "Enter") (e.target as HTMLInputElement).blur();
+                            }}
+                          />
+                        </div>
+                      </div>
+                      <HStack gap={3} vAlign="center">
+                        <Button label="1920 × 1080" variant="secondary" onClick={() => applyOutputSize(1920, 1080)} isDisabled={exporting} />
+                        <Button label="1280 × 720" variant="secondary" onClick={() => applyOutputSize(1280, 720)} isDisabled={exporting} />
+                        <Button label="854 × 480" variant="secondary" onClick={() => applyOutputSize(854, 480)} isDisabled={exporting} />
+                        <Button label="50%" variant="secondary" onClick={() => applyOutputSize(layout.outputWidth / 2, layout.outputHeight / 2)} isDisabled={exporting} />
+                        <Button label="25%" variant="secondary" onClick={() => applyOutputSize(layout.outputWidth / 4, layout.outputHeight / 4)} isDisabled={exporting} />
+                      </HStack>
+                      {isLargeCanvas && (
+                        <Text type="supporting">
+                          <span className="layout-warning">Large canvas: encoding will be heavy and the file big.</span>
+                        </Text>
+                      )}
                       <div className="field-row">
                         <div className="field">
                           <label htmlFor="layout-offset">Second video offset (s)</label>

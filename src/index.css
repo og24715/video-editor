@@ -111,6 +111,10 @@ body {
   font-size: 13px;
 }
 
+.layout-warning {
+  color: var(--color-warning, #f5b14c);
+}
+
 .stage-wrap {
   display: flex;
   justify-content: center;
