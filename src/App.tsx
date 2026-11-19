@@ -15,7 +15,7 @@ import { Switch } from "@astryxdesign/core/Switch";
 import { TextArea } from "@astryxdesign/core/TextArea";
 import { FolderOpen, Type } from "lucide-react";
 import type { AspectPreset, ChromaKeySettings, Clip, CropRect, LayoutTile, MediaMeta, TextPosition, TextStyle, TileRect, TimelineItem, TimelineState, TimelineTrack, TrimRange } from "./model";
-import { DEFAULT_CHROMA_KEY, DEFAULT_IMAGE_DURATION_SEC, DEFAULT_TEXT_STYLE, WAVEFORM_PEAKS_PER_SEC, clampOutputSize, computeWaveformPeaks, containRect, evenRect, pipItemRect, refitRectToAspect, resizedTiles, timelineItemDurationSec } from "./model";
+import { DEFAULT_CHROMA_KEY, DEFAULT_IMAGE_DURATION_SEC, DEFAULT_TEXT_STYLE, WAVEFORM_PEAKS_PER_SEC, clampFadePair, clampOutputSize, clipFadeFactor, computeWaveformPeaks, containRect, evenRect, pipItemRect, refitRectToAspect, resizedTiles, timelineItemDurationSec } from "./model";
 import { ChromaKeyer } from "./chromaKey";
 import { ExportCancelledError, exportCropped, openInput, readMeta, webCodecsSupported } from "./exporter";
 import { exportTimeline } from "./timelineExporter";
@@ -786,6 +786,13 @@ export default function App() {
     (globalSec: number, playing: boolean) => {
       const data = tlEntries();
       if (!data) return;
+      for (const entry of data.tracks[0]?.items ?? []) {
+        const el = tlVideoRefs.current.get(entry.item.id);
+        if (!el) continue;
+        const local = globalSec - entry.startSec;
+        if (local < 0 || local > entry.durationSec) continue;
+        el.volume = clipFadeFactor(entry.item.fadeInSec, entry.item.fadeOutSec, local, entry.durationSec);
+      }
       data.tracks.forEach((trackLayout, trackIndex) => {
         if (trackIndex === 0) return;
         for (const entry of trackLayout.items) {
@@ -793,7 +800,9 @@ export default function App() {
           if (!el) continue;
           const overlayGain = entry.item.gain ?? 1;
           el.muted = !(entry.clip?.meta.hasAudio ?? false) || overlayGain <= 0;
-          el.volume = Math.max(0, Math.min(1, overlayGain));
+          el.volume =
+            Math.max(0, Math.min(1, overlayGain)) *
+            clipFadeFactor(entry.item.fadeInSec, entry.item.fadeOutSec, globalSec - entry.startSec, entry.durationSec);
           const local = globalSec - entry.startSec;
           if (local < 0 || local > entry.durationSec) {
             if (!el.paused) el.pause();
@@ -818,7 +827,9 @@ export default function App() {
         for (const entry of trackLayout.items) {
           const el = tlAudioRefs.current.get(entry.item.id);
           if (!el) continue;
-          el.volume = Math.max(0, Math.min(1, entry.item.gain ?? 1));
+          el.volume =
+            Math.max(0, Math.min(1, entry.item.gain ?? 1)) *
+            clipFadeFactor(entry.item.fadeInSec, entry.item.fadeOutSec, globalSec - entry.startSec, entry.durationSec);
           const local = globalSec - entry.startSec;
           if (local < 0 || local > entry.durationSec) {
             if (!el.paused) el.pause();
@@ -1030,7 +1041,22 @@ export default function App() {
         ? {
             ...prev,
             tracks: prev.tracks.map((t, i) =>
-              i === trackIndex ? { ...t, items: t.items.map((it) => (it.id === itemId ? { ...it, ...patch } : it)) } : t,
+              i === trackIndex
+                ? {
+                    ...t,
+                    items: t.items.map((it) => {
+                      if (it.id !== itemId) return it;
+                      const merged = { ...it, ...patch };
+                      const itemClip = clipsRef.current.find((c) => c.id === merged.clipId) ?? null;
+                      const fades = clampFadePair(
+                        merged.fadeInSec ?? 0,
+                        merged.fadeOutSec ?? 0,
+                        timelineItemDurationSec(merged, itemClip),
+                      );
+                      return { ...merged, fadeInSec: fades.fadeInSec, fadeOutSec: fades.fadeOutSec };
+                    }),
+                  }
+                : t,
             ),
           }
         : prev,
@@ -1056,7 +1082,22 @@ export default function App() {
         ? {
             ...prev,
             audioTracks: prev.audioTracks.map((t, i) =>
-              i === trackIndex ? { ...t, items: t.items.map((it) => (it.id === itemId ? { ...it, ...patch } : it)) } : t,
+              i === trackIndex
+                ? {
+                    ...t,
+                    items: t.items.map((it) => {
+                      if (it.id !== itemId) return it;
+                      const merged = { ...it, ...patch };
+                      const itemClip = clipsRef.current.find((c) => c.id === merged.clipId) ?? null;
+                      const fades = clampFadePair(
+                        merged.fadeInSec ?? 0,
+                        merged.fadeOutSec ?? 0,
+                        timelineItemDurationSec(merged, itemClip),
+                      );
+                      return { ...merged, fadeInSec: fades.fadeInSec, fadeOutSec: fades.fadeOutSec };
+                    }),
+                  }
+                : t,
             ),
           }
         : prev,
@@ -1822,6 +1863,9 @@ export default function App() {
               trim: entry.item.trim,
               crop: evenRect(entry.item.crop, entry.clip.meta.width, entry.clip.meta.height),
               durationSec: entry.clip.kind === "image" ? entry.durationSec : undefined,
+              hasAudio: entry.clip.meta.hasAudio,
+              fadeInSec: entry.item.fadeInSec ?? 0,
+              fadeOutSec: entry.item.fadeOutSec ?? 0,
             },
           ];
         });
@@ -1835,6 +1879,8 @@ export default function App() {
                 startSec: entry.startSec,
                 durationSec: entry.durationSec,
                 style: entry.item.textStyle ?? DEFAULT_TEXT_STYLE,
+                fadeInSec: entry.item.fadeInSec ?? 0,
+                fadeOutSec: entry.item.fadeOutSec ?? 0,
               });
               continue;
             }
@@ -1851,6 +1897,8 @@ export default function App() {
               gain: entry.item.gain ?? 1,
               hasAudio: entry.clip.meta.hasAudio,
               chromaKey: entry.item.chromaKey ?? null,
+              fadeInSec: entry.item.fadeInSec ?? 0,
+              fadeOutSec: entry.item.fadeOutSec ?? 0,
             });
           }
         }
@@ -1864,6 +1912,8 @@ export default function App() {
                 trim: entry.item.trim,
                 startSec: entry.startSec,
                 gain: entry.item.gain ?? 1,
+                fadeInSec: entry.item.fadeInSec ?? 0,
+                fadeOutSec: entry.item.fadeOutSec ?? 0,
               },
             ];
           }),
@@ -2389,7 +2439,15 @@ export default function App() {
                           <div
                             className="tl-base-video"
                             key={activeBaseEntry.item.id}
-                            style={baseVideoBoxStyle(activeBaseClip.meta, activeBaseEntry.item.crop, timeline.outputWidth, timeline.outputHeight)}
+                            style={{
+                              ...baseVideoBoxStyle(activeBaseClip.meta, activeBaseEntry.item.crop, timeline.outputWidth, timeline.outputHeight),
+                              opacity: clipFadeFactor(
+                                activeBaseEntry.item.fadeInSec,
+                                activeBaseEntry.item.fadeOutSec,
+                                tlPlayheadSec - activeBaseEntry.startSec,
+                                activeBaseEntry.durationSec,
+                              ),
+                            }}
                           >
                             {activeBaseClip.kind === "image" ? (
                               <img
@@ -2427,6 +2485,12 @@ export default function App() {
                                 style={{
                                   ...tlPct(entry.item.rect),
                                   visibility: isActive ? "visible" : "hidden",
+                                  opacity: clipFadeFactor(
+                                    entry.item.fadeInSec,
+                                    entry.item.fadeOutSec,
+                                    tlPlayheadSec - entry.startSec,
+                                    entry.durationSec,
+                                  ),
                                   zIndex: trackIndex * 100 + ii,
                                 }}
                                 onPointerDown={(e) => {
@@ -2517,6 +2581,12 @@ export default function App() {
                                   fontSize: fontPx,
                                   color: style.color,
                                   textShadow: shadow,
+                                  opacity: clipFadeFactor(
+                                    entry.item.fadeInSec,
+                                    entry.item.fadeOutSec,
+                                    tlPlayheadSec - entry.startSec,
+                                    entry.durationSec,
+                                  ),
                                   zIndex: trackIndex * 100 + 99,
                                 }}
                               >
@@ -2737,6 +2807,18 @@ export default function App() {
                                 <div className="tl-block-label">
                                   {entryClip.file.name} · {fmtSec(entry.durationSec)}
                                 </div>
+                                {(entry.item.fadeInSec ?? 0) > 0 && (
+                                  <div
+                                    className="tl-block-fade in"
+                                    style={{ width: `${Math.min(100, ((entry.item.fadeInSec ?? 0) / Math.max(entry.durationSec, 0.0001)) * 100)}%` }}
+                                  />
+                                )}
+                                {(entry.item.fadeOutSec ?? 0) > 0 && (
+                                  <div
+                                    className="tl-block-fade out"
+                                    style={{ width: `${Math.min(100, ((entry.item.fadeOutSec ?? 0) / Math.max(entry.durationSec, 0.0001)) * 100)}%` }}
+                                  />
+                                )}
                                 {entryClip.kind === "video" && (
                                   <div
                                     className="tl-block-edge left"
@@ -2805,6 +2887,18 @@ export default function App() {
                                     <div className="tl-block-label">
                                       {firstLine} · {fmtSec(entry.durationSec)}
                                     </div>
+                                    {(entry.item.fadeInSec ?? 0) > 0 && (
+                                      <div
+                                        className="tl-block-fade in"
+                                        style={{ width: `${Math.min(100, ((entry.item.fadeInSec ?? 0) / Math.max(entry.durationSec, 0.0001)) * 100)}%` }}
+                                      />
+                                    )}
+                                    {(entry.item.fadeOutSec ?? 0) > 0 && (
+                                      <div
+                                        className="tl-block-fade out"
+                                        style={{ width: `${Math.min(100, ((entry.item.fadeOutSec ?? 0) / Math.max(entry.durationSec, 0.0001)) * 100)}%` }}
+                                      />
+                                    )}
                                     <div
                                       className="tl-block-edge left"
                                       data-tl-edge="start"
@@ -2871,6 +2965,18 @@ export default function App() {
                                   <div className="tl-block-label">
                                     {entryClip.file.name} · {fmtSec(entry.durationSec)}
                                   </div>
+                                  {(entry.item.fadeInSec ?? 0) > 0 && (
+                                    <div
+                                      className="tl-block-fade in"
+                                      style={{ width: `${Math.min(100, ((entry.item.fadeInSec ?? 0) / Math.max(entry.durationSec, 0.0001)) * 100)}%` }}
+                                    />
+                                  )}
+                                  {(entry.item.fadeOutSec ?? 0) > 0 && (
+                                    <div
+                                      className="tl-block-fade out"
+                                      style={{ width: `${Math.min(100, ((entry.item.fadeOutSec ?? 0) / Math.max(entry.durationSec, 0.0001)) * 100)}%` }}
+                                    />
+                                  )}
                                   <div
                                     className="tl-block-edge left"
                                     data-tl-edge="start"
@@ -2983,6 +3089,18 @@ export default function App() {
                             <div className="tl-block-label">
                               {entryClip.file.name} · {fmtSec(entry.durationSec)} · {(entry.item.gain ?? 1).toFixed(2)}×
                             </div>
+                            {(entry.item.fadeInSec ?? 0) > 0 && (
+                              <div
+                                className="tl-block-fade in"
+                                style={{ width: `${Math.min(100, ((entry.item.fadeInSec ?? 0) / Math.max(entry.durationSec, 0.0001)) * 100)}%` }}
+                              />
+                            )}
+                            {(entry.item.fadeOutSec ?? 0) > 0 && (
+                              <div
+                                className="tl-block-fade out"
+                                style={{ width: `${Math.min(100, ((entry.item.fadeOutSec ?? 0) / Math.max(entry.durationSec, 0.0001)) * 100)}%` }}
+                              />
+                            )}
                             <div
                               className="tl-block-edge left"
                               data-tl-edge="start"
@@ -3491,6 +3609,44 @@ export default function App() {
                               }}
                             />
                           </div>
+                          <div className="field">
+                            <label htmlFor="audio-item-fade-in">Fade in (s)</label>
+                            <input
+                              id="audio-item-fade-in"
+                              type="number"
+                              min={0}
+                              step={0.1}
+                              value={Math.round((selectedAudio.entry.item.fadeInSec ?? 0) * 100) / 100}
+                              disabled={exporting}
+                              onChange={(e) => {
+                                const value = Number(e.target.value);
+                                if (Number.isFinite(value)) {
+                                  updateAudioItem(selectedAudio.trackIndex, selectedAudio.entry.item.id, {
+                                    fadeInSec: value,
+                                  });
+                                }
+                              }}
+                            />
+                          </div>
+                          <div className="field">
+                            <label htmlFor="audio-item-fade-out">Fade out (s)</label>
+                            <input
+                              id="audio-item-fade-out"
+                              type="number"
+                              min={0}
+                              step={0.1}
+                              value={Math.round((selectedAudio.entry.item.fadeOutSec ?? 0) * 100) / 100}
+                              disabled={exporting}
+                              onChange={(e) => {
+                                const value = Number(e.target.value);
+                                if (Number.isFinite(value)) {
+                                  updateAudioItem(selectedAudio.trackIndex, selectedAudio.entry.item.id, {
+                                    fadeOutSec: value,
+                                  });
+                                }
+                              }}
+                            />
+                          </div>
                         </div>
                         <div className="base-gain-row">
                           <Text type="supporting">Clip gain</Text>
@@ -3544,6 +3700,40 @@ export default function App() {
                               }}
                             />
                           </div>
+                          <div className="field">
+                            <label htmlFor="tl-text-fade-in">Fade in (s)</label>
+                            <input
+                              id="tl-text-fade-in"
+                              type="number"
+                              min={0}
+                              step={0.1}
+                              value={Math.round((selectedTl.entry.item.fadeInSec ?? 0) * 100) / 100}
+                              disabled={exporting}
+                              onChange={(e) => {
+                                const value = Number(e.target.value);
+                                if (Number.isFinite(value)) {
+                                  updateTlItem(selectedTl.trackIndex, selectedTl.entry.item.id, { fadeInSec: value });
+                                }
+                              }}
+                            />
+                          </div>
+                          <div className="field">
+                            <label htmlFor="tl-text-fade-out">Fade out (s)</label>
+                            <input
+                              id="tl-text-fade-out"
+                              type="number"
+                              min={0}
+                              step={0.1}
+                              value={Math.round((selectedTl.entry.item.fadeOutSec ?? 0) * 100) / 100}
+                              disabled={exporting}
+                              onChange={(e) => {
+                                const value = Number(e.target.value);
+                                if (Number.isFinite(value)) {
+                                  updateTlItem(selectedTl.trackIndex, selectedTl.entry.item.id, { fadeOutSec: value });
+                                }
+                              }}
+                            />
+                          </div>
                         </div>
                         <HStack gap={3} vAlign="center">
                           <Button
@@ -3585,6 +3775,40 @@ export default function App() {
                                   updateTlItem(selectedTl.trackIndex, selectedTl.entry.item.id, {
                                     durationSec: Math.max(0.1, Math.round(value * 1000) / 1000),
                                   });
+                                }
+                              }}
+                            />
+                          </div>
+                          <div className="field">
+                            <label htmlFor="tl-item-fade-in">Fade in (s)</label>
+                            <input
+                              id="tl-item-fade-in"
+                              type="number"
+                              min={0}
+                              step={0.1}
+                              value={Math.round((selectedTl.entry.item.fadeInSec ?? 0) * 100) / 100}
+                              disabled={exporting}
+                              onChange={(e) => {
+                                const value = Number(e.target.value);
+                                if (Number.isFinite(value)) {
+                                  updateTlItem(selectedTl.trackIndex, selectedTl.entry.item.id, { fadeInSec: value });
+                                }
+                              }}
+                            />
+                          </div>
+                          <div className="field">
+                            <label htmlFor="tl-item-fade-out">Fade out (s)</label>
+                            <input
+                              id="tl-item-fade-out"
+                              type="number"
+                              min={0}
+                              step={0.1}
+                              value={Math.round((selectedTl.entry.item.fadeOutSec ?? 0) * 100) / 100}
+                              disabled={exporting}
+                              onChange={(e) => {
+                                const value = Number(e.target.value);
+                                if (Number.isFinite(value)) {
+                                  updateTlItem(selectedTl.trackIndex, selectedTl.entry.item.id, { fadeOutSec: value });
                                 }
                               }}
                             />
@@ -3641,6 +3865,42 @@ export default function App() {
                                     ...selectedTl.entry.item.trim,
                                     endSec: value,
                                   });
+                                }
+                              }}
+                            />
+                          </div>
+                        </div>
+                        <div className="field-row">
+                          <div className="field">
+                            <label htmlFor="tl-item-fade-in">Fade in (s)</label>
+                            <input
+                              id="tl-item-fade-in"
+                              type="number"
+                              min={0}
+                              step={0.1}
+                              value={Math.round((selectedTl.entry.item.fadeInSec ?? 0) * 100) / 100}
+                              disabled={exporting}
+                              onChange={(e) => {
+                                const value = Number(e.target.value);
+                                if (Number.isFinite(value)) {
+                                  updateTlItem(selectedTl.trackIndex, selectedTl.entry.item.id, { fadeInSec: value });
+                                }
+                              }}
+                            />
+                          </div>
+                          <div className="field">
+                            <label htmlFor="tl-item-fade-out">Fade out (s)</label>
+                            <input
+                              id="tl-item-fade-out"
+                              type="number"
+                              min={0}
+                              step={0.1}
+                              value={Math.round((selectedTl.entry.item.fadeOutSec ?? 0) * 100) / 100}
+                              disabled={exporting}
+                              onChange={(e) => {
+                                const value = Number(e.target.value);
+                                if (Number.isFinite(value)) {
+                                  updateTlItem(selectedTl.trackIndex, selectedTl.entry.item.id, { fadeOutSec: value });
                                 }
                               }}
                             />

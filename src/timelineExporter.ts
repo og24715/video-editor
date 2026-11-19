@@ -9,7 +9,7 @@ import {
 } from "mediabunny";
 import type { AudioCodec, Input, InputVideoTrack } from "mediabunny";
 import type { ChromaKeySettings, CropRect, MediaKind, TextStyle, TileRect, TrimRange } from "./model";
-import { containRect } from "./model";
+import { clampFadePair, clipFadeFactor, containRect } from "./model";
 import { ExportCancelledError, chooseCodec } from "./exporter";
 import { FramePump, clampRange } from "./compositeExporter";
 import { ChromaKeyer } from "./chromaKey";
@@ -25,6 +25,9 @@ export interface TimelineBaseItemSpec {
   trim: TrimRange;
   crop: CropRect;
   durationSec?: number;
+  hasAudio?: boolean;
+  fadeInSec?: number;
+  fadeOutSec?: number;
 }
 
 export interface TimelineOverlayItemSpec {
@@ -39,6 +42,8 @@ export interface TimelineOverlayItemSpec {
   gain?: number;
   hasAudio?: boolean;
   chromaKey?: ChromaKeySettings | null;
+  fadeInSec?: number;
+  fadeOutSec?: number;
 }
 
 export interface TimelineTextItemSpec {
@@ -46,6 +51,8 @@ export interface TimelineTextItemSpec {
   startSec: number;
   durationSec: number;
   style: TextStyle;
+  fadeInSec?: number;
+  fadeOutSec?: number;
 }
 
 export interface TimelineAudioClipSpec {
@@ -54,6 +61,8 @@ export interface TimelineAudioClipSpec {
   trim: TrimRange;
   startSec: number;
   gain: number;
+  fadeInSec?: number;
+  fadeOutSec?: number;
 }
 
 export interface TimelineExportOptions {
@@ -93,6 +102,8 @@ interface ResolvedItem {
   gain: number;
   hasAudio: boolean;
   chromaKey: ChromaKeySettings | null;
+  fadeInSec: number;
+  fadeOutSec: number;
   text?: string;
   style?: TextStyle;
 }
@@ -138,6 +149,8 @@ interface MixPlacement {
   offsetSec: number;
   durationSec: number;
   gain: number;
+  fadeInSec: number;
+  fadeOutSec: number;
 }
 
 async function decodeAudioFile(
@@ -187,6 +200,8 @@ async function buildMixedAudio(
       offsetSec,
       durationSec,
       gain: Math.max(0, Math.min(2, baseAudioGain)),
+      fadeInSec: item.fadeInSec,
+      fadeOutSec: item.fadeOutSec,
     });
     usedBase = true;
   }
@@ -205,6 +220,8 @@ async function buildMixedAudio(
       offsetSec,
       durationSec,
       gain,
+      fadeInSec: item.fadeInSec,
+      fadeOutSec: item.fadeOutSec,
     });
     usedOverlay = true;
   }
@@ -223,6 +240,8 @@ async function buildMixedAudio(
       offsetSec,
       durationSec,
       gain: Math.max(0, Math.min(2, spec.gain)),
+      fadeInSec: spec.fadeInSec ?? 0,
+      fadeOutSec: spec.fadeOutSec ?? 0,
     });
     usedAudioClips = true;
   }
@@ -240,7 +259,19 @@ async function buildMixedAudio(
     const source = offline.createBufferSource();
     source.buffer = placement.buffer;
     const gainNode = offline.createGain();
-    gainNode.gain.value = placement.gain;
+    const fades = clampFadePair(placement.fadeInSec, placement.fadeOutSec, placement.durationSec);
+    if (fades.fadeInSec > 0 || fades.fadeOutSec > 0) {
+      const peak = placement.gain;
+      const t0 = placement.whenSec;
+      gainNode.gain.setValueAtTime(fades.fadeInSec > 0 ? 0 : peak, t0);
+      if (fades.fadeInSec > 0) gainNode.gain.linearRampToValueAtTime(peak, t0 + fades.fadeInSec);
+      if (fades.fadeOutSec > 0) {
+        gainNode.gain.setValueAtTime(peak, Math.max(t0 + fades.fadeInSec, t0 + placement.durationSec - fades.fadeOutSec));
+        gainNode.gain.linearRampToValueAtTime(0, t0 + placement.durationSec);
+      }
+    } else {
+      gainNode.gain.value = placement.gain;
+    }
     source.connect(gainNode);
     gainNode.connect(compressor);
     const durationSec = Math.min(placement.durationSec, totalDurationSec - placement.whenSec);
@@ -385,6 +416,8 @@ export async function exportTimeline(options: TimelineExportOptions): Promise<Ti
         gain: 1,
         hasAudio: false,
         chromaKey: isBase ? null : ((spec as TimelineOverlayItemSpec).chromaKey ?? null),
+        fadeInSec: spec.fadeInSec ?? 0,
+        fadeOutSec: spec.fadeOutSec ?? 0,
       };
       outputDuration = Math.max(outputDuration, startSec + durationSec);
       return resolved;
@@ -409,8 +442,10 @@ export async function exportTimeline(options: TimelineExportOptions): Promise<Ti
       rect: resolvedRect,
       isBase,
       gain: overlaySpec ? (overlaySpec.gain ?? 1) : 1,
-      hasAudio: overlaySpec ? (overlaySpec.hasAudio ?? false) : false,
+      hasAudio: overlaySpec ? (overlaySpec.hasAudio ?? false) : (spec.hasAudio ?? false),
       chromaKey: overlaySpec ? (overlaySpec.chromaKey ?? null) : null,
+      fadeInSec: spec.fadeInSec ?? 0,
+      fadeOutSec: spec.fadeOutSec ?? 0,
     };
     outputDuration = Math.max(outputDuration, startSec + durationSec);
     return resolved;
@@ -447,6 +482,8 @@ export async function exportTimeline(options: TimelineExportOptions): Promise<Ti
       gain: 1,
       hasAudio: false,
       chromaKey: null,
+      fadeInSec: spec.fadeInSec ?? 0,
+      fadeOutSec: spec.fadeOutSec ?? 0,
       text: spec.text,
       style: spec.style,
     });
@@ -483,7 +520,10 @@ export async function exportTimeline(options: TimelineExportOptions): Promise<Ti
 
   const mixAudio =
     options.audioClips.length > 0 ||
-    options.overlays.some((o) => o.kind === "video" && (o.hasAudio ?? false) && (o.gain ?? 1) > 0);
+    options.overlays.some((o) => o.kind === "video" && (o.hasAudio ?? false) && (o.gain ?? 1) > 0) ||
+    options.base.some(
+      (b) => b.kind === "video" && (b.hasAudio ?? false) && ((b.fadeInSec ?? 0) > 0 || (b.fadeOutSec ?? 0) > 0),
+    );
   const mixed = mixAudio
     ? await buildMixedAudio(
         items.filter((item) => item.isBase),
@@ -603,7 +643,11 @@ export async function exportTimeline(options: TimelineExportOptions): Promise<Ti
         const local = t - item.startSec;
         if (local < -0.0005 || local >= item.durationSec) continue;
         if (item.kind === "text") {
-          if (item.text && item.style) drawTextItem(ctx, item.text, item.style, outWidth, outHeight);
+          if (item.text && item.style) {
+            ctx.globalAlpha = clipFadeFactor(item.fadeInSec, item.fadeOutSec, Math.max(0, local), item.durationSec);
+            drawTextItem(ctx, item.text, item.style, outWidth, outHeight);
+            ctx.globalAlpha = 1;
+          }
           continue;
         }
         const crop = item.crop;
@@ -617,12 +661,17 @@ export async function exportTimeline(options: TimelineExportOptions): Promise<Ti
           }
           ctx.drawImage(source, crop.x, crop.y, crop.width, crop.height, item.rect.x, item.rect.y, item.rect.width, item.rect.height);
         };
+        ctx.globalAlpha = clipFadeFactor(item.fadeInSec, item.fadeOutSec, Math.max(0, local), item.durationSec);
         if (item.bitmap) {
           drawSource(item.bitmap, item.bitmap.width, item.bitmap.height);
+          ctx.globalAlpha = 1;
           continue;
         }
         const pump = pumps[k];
-        if (!pump) continue;
+        if (!pump) {
+          ctx.globalAlpha = 1;
+          continue;
+        }
         const sourceTime = item.trim.startSec + Math.max(0, local);
         await pump.advanceTo(sourceTime);
         if (shouldStop()) break;
@@ -630,6 +679,7 @@ export async function exportTimeline(options: TimelineExportOptions): Promise<Ti
         if (frame) {
           drawSource(frame, frame.displayWidth, frame.displayHeight);
         }
+        ctx.globalAlpha = 1;
       }
       if (shouldStop()) break;
       const outFrame = new VideoFrame(canvas, { timestamp: i * frameDurUs, duration: frameDurUs });

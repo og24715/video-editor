@@ -135,8 +135,41 @@ export interface TimelineItem {
   durationSec: number | null;
   gain?: number;
   chromaKey?: ChromaKeySettings;
+  fadeInSec?: number;
+  fadeOutSec?: number;
   text?: string;
   textStyle?: TextStyle;
+}
+
+export function clampFadePair(
+  fadeInSec: number,
+  fadeOutSec: number,
+  durationSec: number,
+): { fadeInSec: number; fadeOutSec: number } {
+  const dur = Math.max(0, durationSec);
+  let fi = Math.max(0, Math.min(fadeInSec || 0, dur));
+  let fo = Math.max(0, Math.min(fadeOutSec || 0, dur));
+  if (fi + fo > dur && fi + fo > 0) {
+    const scale = dur / (fi + fo);
+    fi *= scale;
+    fo *= scale;
+  }
+  return { fadeInSec: fi, fadeOutSec: fo };
+}
+
+export function clipFadeFactor(
+  fadeInSec: number | undefined,
+  fadeOutSec: number | undefined,
+  localSec: number,
+  durationSec: number,
+): number {
+  if (!(durationSec > 0)) return 1;
+  const fi = Math.max(0, Math.min(fadeInSec ?? 0, durationSec));
+  const fo = Math.max(0, Math.min(fadeOutSec ?? 0, durationSec));
+  let factor = 1;
+  if (fi > 0) factor = Math.min(factor, localSec / fi);
+  if (fo > 0) factor = Math.min(factor, (durationSec - localSec) / fo);
+  return Math.max(0, Math.min(1, factor));
 }
 
 export function timelineItemDurationSec(item: TimelineItem, clip: Clip | null): number {
