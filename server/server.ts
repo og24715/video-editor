@@ -23,20 +23,36 @@ const MIME: Record<string, string> = {
   ".map": "application/json",
 };
 
+function cacheControlFor(rel: string): string | null {
+  if (rel === "index.html") return "no-cache";
+  if (rel.startsWith("assets/")) return "public, max-age=31536000, immutable";
+  return null;
+}
+
 function serveStatic(req: http.IncomingMessage, res: http.ServerResponse, urlPath: string): void {
   const rel = urlPath === "/" ? "index.html" : urlPath.replace(/^\/+/, "");
   const file = path.join(STATIC, rel);
   if (file.startsWith(STATIC) && fs.existsSync(file) && fs.statSync(file).isFile()) {
     const ext = path.extname(file).toLowerCase();
     const data = fs.readFileSync(file);
-    res.writeHead(200, { "Content-Type": MIME[ext] || "application/octet-stream", "Content-Length": data.length });
+    const headers: Record<string, string | number> = {
+      "Content-Type": MIME[ext] || "application/octet-stream",
+      "Content-Length": data.length,
+    };
+    const cacheControl = cacheControlFor(rel);
+    if (cacheControl) headers["Cache-Control"] = cacheControl;
+    res.writeHead(200, headers);
     res.end(req.method === "HEAD" ? undefined : data);
     return;
   }
   const index = path.join(STATIC, "index.html");
   if (fs.existsSync(index)) {
     const data = fs.readFileSync(index);
-    res.writeHead(200, { "Content-Type": "text/html; charset=utf-8", "Content-Length": data.length });
+    res.writeHead(200, {
+      "Content-Type": "text/html; charset=utf-8",
+      "Content-Length": data.length,
+      "Cache-Control": "no-cache",
+    });
     res.end(req.method === "HEAD" ? undefined : data);
     return;
   }
