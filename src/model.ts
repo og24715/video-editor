@@ -100,6 +100,23 @@ export function pipItemRect(outputWidth: number, outputHeight: number, aspect: n
   return { x, y, width, height };
 }
 
+export function refitRectToAspect(rect: TileRect, aspect: number, outputWidth: number, outputHeight: number): TileRect {
+  const safeAspect = aspect > 0 ? aspect : 16 / 9;
+  let width = rect.width;
+  let height = width / safeAspect;
+  if (height > outputHeight) {
+    height = outputHeight;
+    width = height * safeAspect;
+  }
+  if (width > outputWidth) {
+    width = outputWidth;
+    height = width / safeAspect;
+  }
+  const x = Math.max(0, Math.min(rect.x, Math.max(0, outputWidth - width)));
+  const y = Math.max(0, Math.min(rect.y, Math.max(0, outputHeight - height)));
+  return { x, y, width, height };
+}
+
 export function containRect(sourceWidth: number, sourceHeight: number, outputWidth: number, outputHeight: number): TileRect {
   if (!(sourceWidth > 0) || !(sourceHeight > 0)) {
     return { x: 0, y: 0, width: outputWidth, height: outputHeight };

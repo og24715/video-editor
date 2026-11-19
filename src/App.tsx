@@ -13,7 +13,7 @@ import { VStack } from "@astryxdesign/core/VStack";
 import { Spinner } from "@astryxdesign/core/Spinner";
 import { FolderOpen } from "lucide-react";
 import type { AspectPreset, Clip, CropRect, LayoutTile, MediaMeta, TileRect, TimelineItem, TimelineState, TimelineTrack, TrimRange } from "./model";
-import { clampOutputSize, containRect, evenRect, pipItemRect, resizedTiles } from "./model";
+import { clampOutputSize, containRect, evenRect, pipItemRect, refitRectToAspect, resizedTiles } from "./model";
 import { ExportCancelledError, exportCropped, openInput, readMeta, webCodecsSupported } from "./exporter";
 import { exportTimeline } from "./timelineExporter";
 import { exportGif, gifOutputSize } from "./gifExporter";
@@ -422,13 +422,29 @@ export default function App() {
 
   const applyDrawerCrop = (crop: CropRect) => {
     if (drawerItemId && drawerItemCrop) {
+      let nextRect: TileRect | null = null;
+      for (const t of timeline.tracks) {
+        const it = t.items.find((i) => i.id === drawerItemId);
+        if (!it) continue;
+        if (it.rect) {
+          const target = clips.find((c) => c.id === it.clipId);
+          if (target) {
+            const out = evenRect(crop, target.meta.width, target.meta.height);
+            const aspect = out.height > 0 ? out.width / out.height : target.meta.width / target.meta.height;
+            nextRect = refitRectToAspect(it.rect, aspect, timeline.outputWidth, timeline.outputHeight);
+          }
+        }
+        break;
+      }
       setTimeline((prev) =>
         prev
           ? {
               ...prev,
               tracks: prev.tracks.map((t) => ({
                 ...t,
-                items: t.items.map((it) => (it.id === drawerItemId ? { ...it, crop } : it)),
+                items: t.items.map((it) =>
+                  it.id === drawerItemId ? (nextRect ? { ...it, crop, rect: nextRect } : { ...it, crop }) : it,
+                ),
               })),
             }
           : prev,
