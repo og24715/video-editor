@@ -195,6 +195,21 @@ body {
   padding: 10px 12px;
 }
 
+.export-section {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  border-top: 1px solid var(--color-border);
+  padding-top: 20px;
+}
+
+.export-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px 12px;
+}
+
 .transport-spacer {
   flex: 1;
   min-width: 8px;

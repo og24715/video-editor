@@ -1784,7 +1784,7 @@ export default function App() {
   };
 
   const runExport = async () => {
-    if (!clip || exporting) return;
+    if (exporting) return;
     if (!supported) {
       setError("WebCodecs is not available in this context. Open this page via localhost or HTTPS in Chrome or Edge.");
       return;
@@ -1801,7 +1801,6 @@ export default function App() {
     setProgress(0);
     setExporting(true);
     try {
-      const out = evenRect(clip.crop, clip.meta.width, clip.meta.height);
       let blob: Blob;
       let suggested: string;
       let pickerType: { description: string; accept: Record<string, string[]> };
@@ -1891,8 +1890,14 @@ export default function App() {
         setAudioMixParts(res.audioMixParts);
         setResultFormat("mp4");
         setResultTimeline(true);
-        suggested = `${clip.file.name.replace(/\.(mp4|wav|mp3|m4a|aac|ogg|flac)$/i, "")}-timeline.mp4`;
+        suggested = clip
+          ? `${clip.file.name.replace(/\.(mp4|wav|mp3|m4a|aac|ogg|flac)$/i, "")}-timeline.mp4`
+          : "timeline.mp4";
         pickerType = { description: "MP4 video", accept: { "video/mp4": [".mp4"] } };
+      } else if (!clip) {
+        setError("Add media or timeline clips first.");
+        setExporting(false);
+        return;
       } else if (clip.kind === "image" || clip.kind === "audio" || !clip.input) {
         setError(
           clip.kind === "audio"
@@ -1904,7 +1909,7 @@ export default function App() {
       } else if (exportFormat === "gif") {
         const res = await exportGif({
           input: clip.input,
-          crop: out,
+          crop: evenRect(clip.crop, clip.meta.width, clip.meta.height),
           trim: clip.trim,
           width: gifWidth === "original" ? 0 : Number(gifWidth),
           fps: Number(gifFps),
@@ -1920,7 +1925,7 @@ export default function App() {
       } else {
         const res = await exportCropped({
           input: clip.input,
-          crop: out,
+          crop: evenRect(clip.crop, clip.meta.width, clip.meta.height),
           trim: clip.trim,
           onProgress: (value) => setProgress(value),
           isCancelled: () => cancelRef.current,
@@ -2534,88 +2539,17 @@ export default function App() {
                   </div>
                   )}
                 </div>
-                <div className="transport-row">
-                  {tlHasItems && (
-                    <>
-                      <Button
-                        label={tlPlaying ? "Pause all" : "Play all"}
-                        variant="primary"
-                        onClick={toggleTlPlayback}
-                        isDisabled={exporting || tlTotalSec <= 0}
-                      />
-                      <div className="transport-seek">
-                        <SeekBar value={tlPlayheadSec} total={tlTotalSec} onSeek={seekTlTo} isDisabled={exporting} />
-                      </div>
-                    </>
-                  )}
-                  <div className="transport-spacer" />
-                  <SegmentedControl
-                    label="Export format"
-                    value={timelineExporting ? "mp4" : exportFormat}
-                    onChange={(value) => {
-                      if (timelineExporting) {
-                        setExportFormat("mp4");
-                        return;
-                      }
-                      setExportFormat(value === "gif" ? "gif" : "mp4");
-                    }}
-                    isDisabled={exporting}
-                  >
-                    <SegmentedControlItem value="mp4" label="MP4" />
-                    <SegmentedControlItem value="gif" label="GIF" isDisabled={timelineExporting || singleImageActive || singleAudioActive} />
-                  </SegmentedControl>
-                  {timelineExporting && <Text type="supporting">Timeline: MP4 only</Text>}
-                  {singleImageActive && <Text type="supporting">Images are used on the timeline</Text>}
-                  {singleAudioActive && <Text type="supporting">Audio is used on the timeline</Text>}
-                  {exporting ? (
+                {tlHasItems && (
+                  <div className="transport-row">
                     <Button
-                      label="Cancel"
-                      variant="secondary"
-                      onClick={() => {
-                        cancelRef.current = true;
-                      }}
-                    />
-                  ) : (
-                    <Button
-                      label={!timelineExporting && exportFormat === "gif" ? "Export GIF" : "Export MP4"}
+                      label={tlPlaying ? "Pause all" : "Play all"}
                       variant="primary"
-                      onClick={() => void runExport()}
-                      isDisabled={!supported || singleImageActive || singleAudioActive}
+                      onClick={toggleTlPlayback}
+                      isDisabled={exporting || tlTotalSec <= 0}
                     />
-                  )}
-                </div>
-                {exportFormat === "gif" && !timelineExporting && (
-                  <div className="gif-settings">
-                    <Text type="supporting">Width</Text>
-                    <SegmentedControl label="GIF width" value={gifWidth} onChange={setGifWidth} isDisabled={exporting}>
-                      {GIF_WIDTHS.map((w) => (
-                        <SegmentedControlItem key={w.value} value={w.value} label={w.label} />
-                      ))}
-                    </SegmentedControl>
-                    <Text type="supporting">FPS</Text>
-                    <SegmentedControl label="GIF frame rate" value={gifFps} onChange={setGifFps} isDisabled={exporting}>
-                      {GIF_FPS_OPTIONS.map((f) => (
-                        <SegmentedControlItem key={f.value} value={f.value} label={f.label} />
-                      ))}
-                    </SegmentedControl>
-                    <Text type="supporting">
-                      GIF: {gifOutputSize(outRect.width, outRect.height, gifWidth === "original" ? 0 : Number(gifWidth)).width} ×{" "}
-                      {gifOutputSize(outRect.width, outRect.height, gifWidth === "original" ? 0 : Number(gifWidth)).height} · no
-                      audio
-                    </Text>
-                    {selectionSec > 10 && (
-                      <span className="gif-warning">
-                        Selection is {fmtSec(selectionSec)} — longer than 10 seconds, so the GIF may get large.
-                      </span>
-                    )}
-                  </div>
-                )}
-                {exporting && (
-                  <div className="export-progress">
-                    <div className="progress-track">
-                      <div className="progress-fill" style={{ width: `${Math.round(progress * 100)}%` }} />
+                    <div className="transport-seek">
+                      <SeekBar value={tlPlayheadSec} total={tlTotalSec} onSeek={seekTlTo} isDisabled={exporting} />
                     </div>
-                    <Text type="supporting">Exporting… {Math.round(progress * 100)}%</Text>
                   </div>
                 )}
               </div>
@@ -3136,8 +3070,9 @@ export default function App() {
                 </Text>
                 )}
               </div>
-            {clip && outRect && (
+            {((clip && outRect) || tlHasItems) && (
               <div className="panel">
+                {clip && (
                 <div className="meta-row">
                   <Text type="supporting">File: {clip.file.name}</Text>
                   {clip.kind !== "audio" && (
@@ -3159,6 +3094,102 @@ export default function App() {
                       <Text type="supporting">Video codec: {clip.meta.videoCodec ?? "unknown"}</Text>
                       <Text type="supporting">Audio: {clip.meta.hasAudio ? (clip.meta.audioCodec ?? "yes") : "none"}</Text>
                     </>
+                  )}
+                </div>
+                )}
+                <div className="export-section">
+                  <Heading level={4}>Export</Heading>
+                  <div className="export-controls">
+                    <SegmentedControl
+                      label="Export format"
+                      value={timelineExporting ? "mp4" : exportFormat}
+                      onChange={(value) => {
+                        if (timelineExporting) {
+                          setExportFormat("mp4");
+                          return;
+                        }
+                        setExportFormat(value === "gif" ? "gif" : "mp4");
+                      }}
+                      isDisabled={exporting}
+                    >
+                      <SegmentedControlItem value="mp4" label="MP4" />
+                      <SegmentedControlItem value="gif" label="GIF" isDisabled={timelineExporting || singleImageActive || singleAudioActive} />
+                    </SegmentedControl>
+                    {timelineExporting && <Text type="supporting">Timeline: MP4 only</Text>}
+                    {singleImageActive && <Text type="supporting">Images are used on the timeline</Text>}
+                    {singleAudioActive && <Text type="supporting">Audio is used on the timeline</Text>}
+                    {exporting ? (
+                      <Button
+                        label="Cancel"
+                        variant="secondary"
+                        onClick={() => {
+                          cancelRef.current = true;
+                        }}
+                      />
+                    ) : (
+                      <Button
+                        label={!timelineExporting && exportFormat === "gif" ? "Export GIF" : "Export MP4"}
+                        variant="primary"
+                        onClick={() => void runExport()}
+                        isDisabled={!supported || singleImageActive || singleAudioActive}
+                      />
+                    )}
+                  </div>
+                  {exportFormat === "gif" && !timelineExporting && outRect && (
+                    <div className="gif-settings">
+                      <Text type="supporting">Width</Text>
+                      <SegmentedControl label="GIF width" value={gifWidth} onChange={setGifWidth} isDisabled={exporting}>
+                        {GIF_WIDTHS.map((w) => (
+                          <SegmentedControlItem key={w.value} value={w.value} label={w.label} />
+                        ))}
+                      </SegmentedControl>
+                      <Text type="supporting">FPS</Text>
+                      <SegmentedControl label="GIF frame rate" value={gifFps} onChange={setGifFps} isDisabled={exporting}>
+                        {GIF_FPS_OPTIONS.map((f) => (
+                          <SegmentedControlItem key={f.value} value={f.value} label={f.label} />
+                        ))}
+                      </SegmentedControl>
+                      <Text type="supporting">
+                        GIF: {gifOutputSize(outRect.width, outRect.height, gifWidth === "original" ? 0 : Number(gifWidth)).width} ×{" "}
+                        {gifOutputSize(outRect.width, outRect.height, gifWidth === "original" ? 0 : Number(gifWidth)).height} · no
+                        audio
+                      </Text>
+                      {selectionSec > 10 && (
+                        <span className="gif-warning">
+                          Selection is {fmtSec(selectionSec)} — longer than 10 seconds, so the GIF may get large.
+                        </span>
+                      )}
+                    </div>
+                  )}
+                  {exporting && (
+                    <div className="export-progress">
+                      <div className="progress-track">
+                        <div className="progress-fill" style={{ width: `${Math.round(progress * 100)}%` }} />
+                      </div>
+                      <Text type="supporting">Exporting… {Math.round(progress * 100)}%</Text>
+                    </div>
+                  )}
+                  {resultUrl && !exporting && (
+                    <VStack gap={2}>
+                      {resultFormat === "gif" ? (
+                        <Text type="supporting">
+                          Done. {usedCodec ?? "GIF"}
+                          {" · "}
+                          {fmtSize(resultSize)}
+                        </Text>
+                      ) : (
+                        <Text type="supporting">
+                          Done. Codec: {usedCodec ?? "unknown"}
+                          {` · ${resultAudioText} · `}
+                          {fmtSize(resultSize)}
+                        </Text>
+                      )}
+                      <HStack gap={3}>
+                        <a href={resultUrl} download={resultName}>
+                          <Button label={`Download ${resultName}`} variant="secondary" />
+                        </a>
+                      </HStack>
+                    </VStack>
                   )}
                 </div>
                 {timeline && (
@@ -3850,13 +3881,13 @@ export default function App() {
                     )}
                   </>
                 )}
-                {!tlHasItems && clip.kind === "image" && (
+                {clip && !tlHasItems && clip.kind === "image" && (
                   <Text type="supporting">
                     This is an image. Images are used on the timeline: add it to the timeline, where each image
                     clip has its own crop and duration, then export the timeline as MP4.
                   </Text>
                 )}
-                {!tlHasItems && clip.kind === "video" && (
+                {clip && outRect && !tlHasItems && clip.kind === "video" && (
                   <>
                     <Text type="supporting">
                       {isFullFrame
@@ -3872,28 +3903,6 @@ export default function App() {
                       {`Output: ${outRect.width} × ${outRect.height} (adjusted to even numbers)`}
                     </Text>
                   </>
-                )}
-                {resultUrl && !exporting && (
-                  <VStack gap={2}>
-                    {resultFormat === "gif" ? (
-                      <Text type="supporting">
-                        Done. {usedCodec ?? "GIF"}
-                        {" · "}
-                        {fmtSize(resultSize)}
-                      </Text>
-                    ) : (
-                      <Text type="supporting">
-                        Done. Codec: {usedCodec ?? "unknown"}
-                        {` · ${resultAudioText} · `}
-                        {fmtSize(resultSize)}
-                      </Text>
-                    )}
-                    <HStack gap={3}>
-                      <a href={resultUrl} download={resultName}>
-                        <Button label={`Download ${resultName}`} variant="secondary" />
-                      </a>
-                    </HStack>
-                  </VStack>
                 )}
               </div>
             )}
