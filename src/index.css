@@ -622,6 +622,26 @@ body {
   pointer-events: none;
 }
 
+.tl-ghost-track {
+  outline: 2px dashed var(--color-accent, #e94560);
+  outline-offset: -2px;
+}
+
+.tl-ghost-track.hot {
+  background: var(--color-background-surface);
+}
+
+.tl-ghost-hint {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  padding: 0 12px;
+  font-size: 12px;
+  color: var(--color-text-secondary);
+  pointer-events: none;
+}
+
 .tl-base-video {
   -webkit-user-select: none;
   user-select: none;

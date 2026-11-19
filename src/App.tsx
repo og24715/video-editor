@@ -290,6 +290,8 @@ export default function App() {
   const [tlOutWText, setTlOutWText] = useState("");
   const [tlOutHText, setTlOutHText] = useState("");
   const [selectedTlItemId, setSelectedTlItemId] = useState<string | null>(null);
+  const [tlGhostVisible, setTlGhostVisible] = useState(false);
+  const [tlGhostHot, setTlGhostHot] = useState(false);
   const [tlPlaying, setTlPlaying] = useState(false);
   const [tlPlayheadSec, setTlPlayheadSec] = useState(0);
   const [tlThumbs, setTlThumbs] = useState<Record<string, string[]>>({});
@@ -1158,6 +1160,33 @@ export default function App() {
           ...withSize,
           tracks: withSize.tracks.map((t, i) => (i === trackIndex ? { ...t, items: [...t.items, item] } : t)),
         };
+      });
+      setSelectedTlItemId(itemId);
+    },
+    [clipCropAspect],
+  );
+
+  const addClipToNewTrack = useCallback(
+    (clipId: string, startSec: number) => {
+      const target = clipsRef.current.find((c) => c.id === clipId);
+      if (!target) return;
+      const sized = evenRect(target.crop, target.meta.width, target.meta.height);
+      const itemId = nextTlId("tlitem");
+      setTimeline((prev) => {
+        const base: TimelineState =
+          prev ?? { outputWidth: 0, outputHeight: 0, tracks: [{ id: nextTlId("track"), items: [] }] };
+        const withSize =
+          base.outputWidth > 0 && base.outputHeight > 0
+            ? base
+            : { ...base, outputWidth: sized.width, outputHeight: sized.height };
+        const rect = pipItemRect(withSize.outputWidth, withSize.outputHeight, clipCropAspect(target));
+        const item: TimelineItem = {
+          id: itemId,
+          clipId,
+          startSec: Math.max(0, Math.round(startSec * 10) / 10),
+          rect,
+        };
+        return { ...withSize, tracks: [...withSize.tracks, { id: nextTlId("track"), items: [item] }] };
       });
       setSelectedTlItemId(itemId);
     },
@@ -2315,7 +2344,54 @@ export default function App() {
                   )}
                 </div>
                 {timelineActive && timeline && tlLayout && (
-                  <div className="tl-strip">
+                  <div
+                    className="tl-strip"
+                    onDragEnter={(e) => {
+                      if (Array.from(e.dataTransfer.types).includes(POOL_DRAG_TYPE)) setTlGhostVisible(true);
+                    }}
+                    onDragOver={(e) => {
+                      if (Array.from(e.dataTransfer.types).includes(POOL_DRAG_TYPE)) setTlGhostVisible(true);
+                    }}
+                    onDragLeave={(e) => {
+                      if (!e.currentTarget.contains(e.relatedTarget as Node | null)) {
+                        setTlGhostVisible(false);
+                        setTlGhostHot(false);
+                      }
+                    }}
+                    onDrop={() => {
+                      setTlGhostVisible(false);
+                      setTlGhostHot(false);
+                    }}
+                  >
+                    {tlGhostVisible && (
+                      <div className="tl-row">
+                        <div className="tl-row-label">New</div>
+                        <div
+                          className={`tl-row-track tl-ghost-track${tlGhostHot ? " hot" : ""}`}
+                          data-tl-ghost="true"
+                          onDragOver={(e) => {
+                            if (Array.from(e.dataTransfer.types).includes(POOL_DRAG_TYPE)) {
+                              e.preventDefault();
+                              e.dataTransfer.dropEffect = "copy";
+                              setTlGhostHot(true);
+                            }
+                          }}
+                          onDragLeave={() => setTlGhostHot(false)}
+                          onDrop={(e) => {
+                            const droppedClipId =
+                              e.dataTransfer.getData(POOL_DRAG_TYPE) || e.dataTransfer.getData("text/plain");
+                            if (!droppedClipId || !clipsRef.current.some((c) => c.id === droppedClipId)) return;
+                            e.preventDefault();
+                            const rect = e.currentTarget.getBoundingClientRect();
+                            const frac =
+                              rect.width > 0 ? Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width)) : 0;
+                            addClipToNewTrack(droppedClipId, frac * tlTotalSec);
+                          }}
+                        >
+                          <div className="tl-ghost-hint">Drop here to start a new track</div>
+                        </div>
+                      </div>
+                    )}
                     {tlLayout.tracks
                       .slice()
                       .reverse()
