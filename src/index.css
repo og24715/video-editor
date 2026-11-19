@@ -335,6 +335,24 @@ body {
   padding-top: 14px;
 }
 
+.seekbar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  padding-top: 12px;
+  box-sizing: border-box;
+}
+
+.seekbar > :first-child {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.seekbar > :last-child {
+  white-space: nowrap;
+}
+
 .crop-rect {
   position: absolute;
   border: 2px solid var(--color-accent, #e94560);

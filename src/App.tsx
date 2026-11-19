@@ -6,6 +6,7 @@ import { Card } from "@astryxdesign/core/Card";
 import { Text } from "@astryxdesign/core/Text";
 import { Button } from "@astryxdesign/core/Button";
 import { SegmentedControl, SegmentedControlItem } from "@astryxdesign/core/SegmentedControl";
+import { Slider } from "@astryxdesign/core/Slider";
 import { HStack } from "@astryxdesign/core/HStack";
 import { VStack } from "@astryxdesign/core/VStack";
 import { Spinner } from "@astryxdesign/core/Spinner";
@@ -139,6 +140,50 @@ function clampTrim(next: TrimRange, durationSec: number): TrimRange {
 
 function fmtSec(sec: number): string {
   return `${(Math.round(sec * 10) / 10).toFixed(1)}s`;
+}
+
+function fmtClock(sec: number): string {
+  const s = Math.max(0, Number.isFinite(sec) ? sec : 0);
+  const m = Math.floor(s / 60);
+  const rest = s - m * 60;
+  return `${m}:${rest.toFixed(1).padStart(4, "0")}`;
+}
+
+function SeekBar(props: {
+  value: number;
+  total: number;
+  onSeek: (sec: number) => void;
+  isDisabled?: boolean;
+}) {
+  const [scrubSec, setScrubSec] = useState<number | null>(null);
+  const total = Math.max(0, props.total);
+  const shown = scrubSec ?? Math.max(0, Math.min(total, props.value));
+  return (
+    <div className="seekbar">
+      <Slider
+        data-testid="composite-seek"
+        label="Seek"
+        isLabelHidden
+        valueDisplay="none"
+        min={0}
+        max={total}
+        step={0.1}
+        value={shown}
+        isDisabled={props.isDisabled || total <= 0}
+        onChange={(value: number) => {
+          setScrubSec(value);
+          props.onSeek(value);
+        }}
+        onChangeEnd={(value: number) => {
+          props.onSeek(value);
+          setScrubSec(null);
+        }}
+      />
+      <Text type="supporting">
+        {fmtClock(shown)} / {fmtClock(total)}
+      </Text>
+    </div>
+  );
 }
 
 function clampTimeToTrim(t: number, trim: TrimRange): number {
@@ -284,6 +329,7 @@ export default function App() {
   const [playheadSec, setPlayheadSec] = useState(0);
   const [layout, setLayout] = useState<LayoutState | null>(null);
   const [layoutPlaying, setLayoutPlaying] = useState(false);
+  const [layoutPlayheadSec, setLayoutPlayheadSec] = useState(0);
   const [outWText, setOutWText] = useState("");
   const [outHText, setOutHText] = useState("");
   const [timeline, setTimeline] = useState<TimelineState | null>(null);
@@ -663,6 +709,7 @@ export default function App() {
       const currentLayout = layoutRef.current;
       if (!currentLayout) return;
       const masterOut = master.currentTime - masterClip.trim.startSec;
+      setLayoutPlayheadSec(Math.max(0, masterOut));
       for (let i = 1; i < currentLayout.tiles.length; i++) {
         const tile = currentLayout.tiles[i];
         const el = tileVideoRefs.current.get(tile.id);
@@ -700,6 +747,7 @@ export default function App() {
     master.addEventListener("timeupdate", sync);
     master.addEventListener("pause", pauseOthers);
     master.addEventListener("play", onPlayMaster);
+    sync();
     return () => {
       master.removeEventListener("timeupdate", sync);
       master.removeEventListener("pause", pauseOthers);
@@ -1459,6 +1507,51 @@ export default function App() {
     void master.play().catch(() => undefined);
     setLayoutPlaying(true);
   };
+
+  const seekLayoutTo = useCallback((globalSec: number) => {
+    const lay = layoutRef.current;
+    if (!lay || lay.tiles.length === 0) return;
+    const clipsNow = clipsRef.current;
+    const total = lay.tiles.reduce((max, tile) => {
+      const tileClip = clipsNow.find((c) => c.id === tile.clipId);
+      if (!tileClip) return max;
+      return Math.max(max, tile.offsetSec + Math.max(0, tileClip.trim.endSec - tileClip.trim.startSec));
+    }, 0);
+    const g = Math.max(0, Math.min(total, globalSec));
+    setLayoutPlayheadSec(g);
+    const masterTile = lay.tiles[0];
+    const masterClip = clipsNow.find((c) => c.id === masterTile.clipId);
+    const master = tileVideoRefs.current.get(masterTile.id);
+    const playing = master ? !master.paused : false;
+    if (master && masterClip) {
+      const target = Math.max(
+        masterClip.trim.startSec,
+        Math.min(masterClip.trim.endSec, masterClip.trim.startSec + g),
+      );
+      if (Math.abs(master.currentTime - target) > 0.02) master.currentTime = target;
+      if (playing && master.paused) void master.play().catch(() => undefined);
+    }
+    for (let i = 1; i < lay.tiles.length; i++) {
+      const tile = lay.tiles[i];
+      const el = tileVideoRefs.current.get(tile.id);
+      const tileClip = clipsNow.find((c) => c.id === tile.clipId);
+      if (!el || !tileClip) continue;
+      const local = g - tile.offsetSec;
+      if (local < 0) {
+        if (!el.paused) el.pause();
+        if (Math.abs(el.currentTime - tileClip.trim.startSec) > 0.02) el.currentTime = tileClip.trim.startSec;
+        continue;
+      }
+      if (local > tileClip.trim.endSec - tileClip.trim.startSec) {
+        if (!el.paused) el.pause();
+        if (Math.abs(el.currentTime - tileClip.trim.endSec) > 0.02) el.currentTime = tileClip.trim.endSec;
+        continue;
+      }
+      const target = tileClip.trim.startSec + local;
+      if (Math.abs(el.currentTime - target) > 0.02) el.currentTime = target;
+      if (playing && el.paused) void el.play().catch(() => undefined);
+    }
+  }, []);
 
   const changeAspect = (value: string) => {
     if (!cropActive) return;
@@ -2297,6 +2390,12 @@ export default function App() {
                           );
                         })}
                       </div>
+                      <SeekBar
+                        value={layoutPlayheadSec}
+                        total={layoutDurationSec}
+                        onSeek={seekLayoutTo}
+                        isDisabled={exporting}
+                      />
                       <div className="layout-controls">
                         <Button
                           label={layoutPlaying ? "Pause all" : "Play all"}
@@ -2343,6 +2442,9 @@ export default function App() {
                   </div>
                   )}
                 </div>
+                {timelineActive && timeline && tlLayout && (
+                  <SeekBar value={tlPlayheadSec} total={tlTotalSec} onSeek={seekTlTo} isDisabled={exporting} />
+                )}
                 {timelineActive && timeline && tlLayout && (
                   <div
                     className="tl-strip"
