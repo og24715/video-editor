@@ -15,6 +15,7 @@ these terms with these meanings.
 | **Base track** | The first track (V1). Its Clips play back-to-back in order and fill the Stage. Its audio is copied in a Timeline export when nothing needs mixing, and is mixed with the Audio clips and any audible Overlay clips when there are. |
 | **Overlay track** | Any track above the Base track (V2, V3, …). Its Clips sit at an explicit start time and rectangle on top of the Base track, picture-in-picture style. An Overlay Clip's own audio plays in the preview and is mixed into a Timeline export at the Clip's Gain when its gain is above 0. |
 | **Gain** | A Clip's audio volume multiplier (0–2, default 1). It applies to Audio clips and to Overlay Video clips in the preview (capped at 1×) and in mixed Timeline exports (full range). A gain of 0 keeps the Clip silent. |
+| **Chroma key** | Per-Clip removal of a key color (for example a green screen) on Overlay Video and Image Clips, so the tracks below show through. Set per Clip in the panel: key color, Tolerance (how close a color must be to be removed), and Softness (edge feathering). |
 | **Audio track** | A Track below the video Tracks (A1, A2, …) that holds Audio clips at explicit start times. Audio tracks are mixed together and with the Base track's audio in a Timeline export. |
 | **Audio clip** | A Clip of an Audio Media on an Audio track. It has a Trim, a start time, a Gain, and a Waveform. |
 | **Waveform** | The min/max peak picture of an Audio Media, drawn in its pool card and in each Audio clip; trimming a clip windows the Waveform to the trimmed range. |

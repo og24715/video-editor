@@ -14,8 +14,9 @@ import { Spinner } from "@astryxdesign/core/Spinner";
 import { Switch } from "@astryxdesign/core/Switch";
 import { TextArea } from "@astryxdesign/core/TextArea";
 import { FolderOpen, Type } from "lucide-react";
-import type { AspectPreset, Clip, CropRect, LayoutTile, MediaMeta, TextPosition, TextStyle, TileRect, TimelineItem, TimelineState, TimelineTrack, TrimRange } from "./model";
-import { DEFAULT_IMAGE_DURATION_SEC, DEFAULT_TEXT_STYLE, WAVEFORM_PEAKS_PER_SEC, clampOutputSize, computeWaveformPeaks, containRect, evenRect, pipItemRect, refitRectToAspect, resizedTiles, timelineItemDurationSec } from "./model";
+import type { AspectPreset, ChromaKeySettings, Clip, CropRect, LayoutTile, MediaMeta, TextPosition, TextStyle, TileRect, TimelineItem, TimelineState, TimelineTrack, TrimRange } from "./model";
+import { DEFAULT_CHROMA_KEY, DEFAULT_IMAGE_DURATION_SEC, DEFAULT_TEXT_STYLE, WAVEFORM_PEAKS_PER_SEC, clampOutputSize, computeWaveformPeaks, containRect, evenRect, pipItemRect, refitRectToAspect, resizedTiles, timelineItemDurationSec } from "./model";
+import { ChromaKeyer } from "./chromaKey";
 import { ExportCancelledError, exportCropped, openInput, readMeta, webCodecsSupported } from "./exporter";
 import { exportTimeline } from "./timelineExporter";
 import { exportGif, gifOutputSize } from "./gifExporter";
@@ -344,6 +345,69 @@ function WaveformCanvas(props: {
     ctx.stroke();
   }, [peaks, durationSec, trim.startSec, trim.endSec]);
   return <canvas ref={canvasRef} className={props.className ?? "waveform-canvas"} aria-hidden="true" />;
+}
+
+function KeyedTileContent(props: {
+  clip: Clip;
+  item: TimelineItem;
+  registerVideo: (el: HTMLVideoElement | null) => void;
+}) {
+  const { clip, item } = props;
+  const videoRef = useRef<HTMLVideoElement | null>(null);
+  const imgRef = useRef<HTMLImageElement | null>(null);
+  const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const keyerRef = useRef<ChromaKeyer | null>(null);
+  const settings: ChromaKeySettings = item.chromaKey ?? DEFAULT_CHROMA_KEY;
+  const crop = item.crop;
+  useEffect(() => {
+    let raf = 0;
+    let lastStamp = "";
+    const draw = () => {
+      raf = requestAnimationFrame(draw);
+      if (!canvasRef.current) return;
+      if (!keyerRef.current) keyerRef.current = new ChromaKeyer(canvasRef.current);
+      const keyer = keyerRef.current;
+      if (!keyer.ok) return;
+      const settingsStamp = `${settings.color}|${settings.tolerance}|${settings.softness}`;
+      const cropStamp = `${crop.x},${crop.y},${crop.width},${crop.height}`;
+      if (clip.kind === "video") {
+        const video = videoRef.current;
+        if (!video || video.readyState < 2 || video.videoWidth === 0) return;
+        const stamp = `${video.currentTime.toFixed(3)}|${cropStamp}|${settingsStamp}`;
+        if (stamp === lastStamp) return;
+        lastStamp = stamp;
+        keyer.render(video, video.videoWidth, video.videoHeight, crop, settings);
+      } else {
+        const img = imgRef.current;
+        if (!img || !img.complete || img.naturalWidth === 0) return;
+        const stamp = `img|${cropStamp}|${settingsStamp}`;
+        if (stamp === lastStamp) return;
+        lastStamp = stamp;
+        keyer.render(img, img.naturalWidth, img.naturalHeight, crop, settings);
+      }
+    };
+    raf = requestAnimationFrame(draw);
+    return () => cancelAnimationFrame(raf);
+  }, [clip, crop, settings]);
+  return (
+    <>
+      {clip.kind === "video" ? (
+        <video
+          ref={(el) => {
+            videoRef.current = el;
+            props.registerVideo(el);
+          }}
+          src={clip.url}
+          playsInline
+          muted={!clip.meta.hasAudio || (item.gain ?? 1) <= 0}
+          style={{ display: "none" }}
+        />
+      ) : (
+        <img ref={imgRef} src={clip.url} alt="" draggable={false} style={{ display: "none" }} />
+      )}
+      <canvas ref={canvasRef} className="tl-keyed-canvas" />
+    </>
+  );
 }
 
 async function captureThumbs(
@@ -1787,6 +1851,7 @@ export default function App() {
               rect: entry.item.rect,
               gain: entry.item.gain ?? 1,
               hasAudio: entry.clip.meta.hasAudio,
+              chromaKey: entry.item.chromaKey ?? null,
             });
           }
         }
@@ -1967,6 +2032,13 @@ export default function App() {
     }
     return null;
   })();
+  const selectedChromaKey: ChromaKeySettings = selectedTl?.entry.item.chromaKey ?? DEFAULT_CHROMA_KEY;
+  const updateSelectedChromaKey = (patch: Partial<ChromaKeySettings>) => {
+    if (!selectedTl) return;
+    updateTlItem(selectedTl.trackIndex, selectedTl.entry.item.id, {
+      chromaKey: { ...selectedChromaKey, ...patch },
+    });
+  };
   const drawerItem = (() => {
     if (!drawerItemId || !timeline) return null;
     for (let ti = 0; ti < timeline.tracks.length; ti++) {
@@ -2364,7 +2436,16 @@ export default function App() {
                                 onPointerUp={endTlTileDrag}
                                 onPointerCancel={endTlTileDrag}
                               >
-                                {entryClip.kind === "image" ? (
+                                {(entry.item.chromaKey ?? DEFAULT_CHROMA_KEY).enabled ? (
+                                  <KeyedTileContent
+                                    clip={entryClip}
+                                    item={entry.item}
+                                    registerVideo={(el) => {
+                                      if (el) tlVideoRefs.current.set(entry.item.id, el);
+                                      else tlVideoRefs.current.delete(entry.item.id);
+                                    }}
+                                  />
+                                ) : entryClip.kind === "image" ? (
                                   <img
                                     src={entryClip.url}
                                     alt=""
@@ -3639,6 +3720,112 @@ export default function App() {
                               This clip's audio plays in the preview and is mixed into timeline exports at this
                               gain. Set it to 0 to keep the clip silent.
                             </Text>
+                          </>
+                        )}
+                        {(selectedTl.entry.clip.kind === "video" || selectedTl.entry.clip.kind === "image") && (
+                          <>
+                            <HStack gap={3} vAlign="center">
+                              <Switch
+                                label="Chroma key"
+                                value={selectedChromaKey.enabled}
+                                onChange={(checked) => updateSelectedChromaKey({ enabled: checked })}
+                              />
+                              <input
+                                id="chroma-color"
+                                type="color"
+                                aria-label="Chroma key color"
+                                value={selectedChromaKey.color}
+                                disabled={exporting}
+                                onChange={(e) => updateSelectedChromaKey({ color: e.target.value })}
+                              />
+                            </HStack>
+                            {selectedChromaKey.enabled && (
+                              <>
+                                <div className="field-row">
+                                  <div className="field">
+                                    <label htmlFor="chroma-tolerance">Tolerance (0–1)</label>
+                                    <input
+                                      id="chroma-tolerance"
+                                      type="number"
+                                      min={0}
+                                      max={1}
+                                      step={0.05}
+                                      value={selectedChromaKey.tolerance}
+                                      disabled={exporting}
+                                      onChange={(e) => {
+                                        const value = Number(e.target.value);
+                                        if (Number.isFinite(value)) {
+                                          updateSelectedChromaKey({
+                                            tolerance: Math.max(0, Math.min(1, value)),
+                                          });
+                                        }
+                                      }}
+                                    />
+                                  </div>
+                                  <div className="field">
+                                    <label htmlFor="chroma-softness">Softness (0–1)</label>
+                                    <input
+                                      id="chroma-softness"
+                                      type="number"
+                                      min={0}
+                                      max={1}
+                                      step={0.05}
+                                      value={selectedChromaKey.softness}
+                                      disabled={exporting}
+                                      onChange={(e) => {
+                                        const value = Number(e.target.value);
+                                        if (Number.isFinite(value)) {
+                                          updateSelectedChromaKey({
+                                            softness: Math.max(0, Math.min(1, value)),
+                                          });
+                                        }
+                                      }}
+                                    />
+                                  </div>
+                                </div>
+                                <div className="base-gain-row">
+                                  <Text type="supporting">Tolerance</Text>
+                                  <div className="base-gain-slider">
+                                    <Slider
+                                      data-testid="chroma-tolerance-slider"
+                                      label="Chroma key tolerance"
+                                      isLabelHidden
+                                      valueDisplay="none"
+                                      min={0}
+                                      max={1}
+                                      step={0.01}
+                                      value={selectedChromaKey.tolerance}
+                                      isDisabled={exporting}
+                                      onChange={(value: number) => updateSelectedChromaKey({ tolerance: value })}
+                                    />
+                                  </div>
+                                  <Text type="supporting">{selectedChromaKey.tolerance.toFixed(2)}</Text>
+                                </div>
+                                <div className="base-gain-row">
+                                  <Text type="supporting">Softness</Text>
+                                  <div className="base-gain-slider">
+                                    <Slider
+                                      data-testid="chroma-softness-slider"
+                                      label="Chroma key softness"
+                                      isLabelHidden
+                                      valueDisplay="none"
+                                      min={0}
+                                      max={1}
+                                      step={0.01}
+                                      value={selectedChromaKey.softness}
+                                      isDisabled={exporting}
+                                      onChange={(value: number) => updateSelectedChromaKey({ softness: value })}
+                                    />
+                                  </div>
+                                  <Text type="supporting">{selectedChromaKey.softness.toFixed(2)}</Text>
+                                </div>
+                                <Text type="supporting">
+                                  Parts of this clip close to the key color become transparent, so the tracks
+                                  below show through. Tolerance sets how close a color must be; softness feathers
+                                  the edge.
+                                </Text>
+                              </>
+                            )}
                           </>
                         )}
                         <HStack gap={3} vAlign="center">

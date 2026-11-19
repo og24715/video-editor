@@ -84,6 +84,20 @@ export const DEFAULT_TEXT_STYLE: TextStyle = {
   position: "bottom",
 };
 
+export interface ChromaKeySettings {
+  enabled: boolean;
+  color: string;
+  tolerance: number;
+  softness: number;
+}
+
+export const DEFAULT_CHROMA_KEY: ChromaKeySettings = {
+  enabled: false,
+  color: "#00ff00",
+  tolerance: 0.3,
+  softness: 0.1,
+};
+
 export type AspectPreset = "free" | "16:9" | "9:16" | "1:1" | "4:3";
 
 export function evenRect(crop: CropRect, maxWidth: number, maxHeight: number): CropRect {
@@ -120,6 +134,7 @@ export interface TimelineItem {
   crop: CropRect;
   durationSec: number | null;
   gain?: number;
+  chromaKey?: ChromaKeySettings;
   text?: string;
   textStyle?: TextStyle;
 }

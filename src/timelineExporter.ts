@@ -8,10 +8,11 @@ import {
   Output,
 } from "mediabunny";
 import type { AudioCodec, Input, InputVideoTrack } from "mediabunny";
-import type { CropRect, MediaKind, TextStyle, TileRect, TrimRange } from "./model";
+import type { ChromaKeySettings, CropRect, MediaKind, TextStyle, TileRect, TrimRange } from "./model";
 import { containRect } from "./model";
 import { ExportCancelledError, chooseCodec } from "./exporter";
 import { FramePump, clampRange } from "./compositeExporter";
+import { ChromaKeyer } from "./chromaKey";
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -37,6 +38,7 @@ export interface TimelineOverlayItemSpec {
   rect: TileRect;
   gain?: number;
   hasAudio?: boolean;
+  chromaKey?: ChromaKeySettings | null;
 }
 
 export interface TimelineTextItemSpec {
@@ -90,6 +92,7 @@ interface ResolvedItem {
   isBase: boolean;
   gain: number;
   hasAudio: boolean;
+  chromaKey: ChromaKeySettings | null;
   text?: string;
   style?: TextStyle;
 }
@@ -381,6 +384,7 @@ export async function exportTimeline(options: TimelineExportOptions): Promise<Ti
         isBase,
         gain: 1,
         hasAudio: false,
+        chromaKey: isBase ? null : ((spec as TimelineOverlayItemSpec).chromaKey ?? null),
       };
       outputDuration = Math.max(outputDuration, startSec + durationSec);
       return resolved;
@@ -406,6 +410,7 @@ export async function exportTimeline(options: TimelineExportOptions): Promise<Ti
       isBase,
       gain: overlaySpec ? (overlaySpec.gain ?? 1) : 1,
       hasAudio: overlaySpec ? (overlaySpec.hasAudio ?? false) : false,
+      chromaKey: overlaySpec ? (overlaySpec.chromaKey ?? null) : null,
     };
     outputDuration = Math.max(outputDuration, startSec + durationSec);
     return resolved;
@@ -441,6 +446,7 @@ export async function exportTimeline(options: TimelineExportOptions): Promise<Ti
       isBase: false,
       gain: 1,
       hasAudio: false,
+      chromaKey: null,
       text: spec.text,
       style: spec.style,
     });
@@ -568,6 +574,7 @@ export async function exportTimeline(options: TimelineExportOptions): Promise<Ti
   const canvas = new OffscreenCanvas(outWidth, outHeight);
   const ctx = canvas.getContext("2d");
   if (!ctx) throw new Error("Could not create a 2D canvas context.");
+  let keyer: ChromaKeyer | null = null;
 
   let muxChain: Promise<void> = Promise.resolve();
   const encoder = new VideoEncoder({
@@ -600,8 +607,18 @@ export async function exportTimeline(options: TimelineExportOptions): Promise<Ti
           continue;
         }
         const crop = item.crop;
+        const drawSource = (source: ImageBitmap | VideoFrame, sourceWidth: number, sourceHeight: number) => {
+          if (item.chromaKey && item.chromaKey.enabled) {
+            if (!keyer) keyer = new ChromaKeyer();
+            if (keyer.ok && keyer.render(source, sourceWidth, sourceHeight, crop, item.chromaKey)) {
+              ctx.drawImage(keyer.canvas, item.rect.x, item.rect.y, item.rect.width, item.rect.height);
+              return;
+            }
+          }
+          ctx.drawImage(source, crop.x, crop.y, crop.width, crop.height, item.rect.x, item.rect.y, item.rect.width, item.rect.height);
+        };
         if (item.bitmap) {
-          ctx.drawImage(item.bitmap, crop.x, crop.y, crop.width, crop.height, item.rect.x, item.rect.y, item.rect.width, item.rect.height);
+          drawSource(item.bitmap, item.bitmap.width, item.bitmap.height);
           continue;
         }
         const pump = pumps[k];
@@ -611,7 +628,7 @@ export async function exportTimeline(options: TimelineExportOptions): Promise<Ti
         if (shouldStop()) break;
         const frame = pump.current;
         if (frame) {
-          ctx.drawImage(frame, crop.x, crop.y, crop.width, crop.height, item.rect.x, item.rect.y, item.rect.width, item.rect.height);
+          drawSource(frame, frame.displayWidth, frame.displayHeight);
         }
       }
       if (shouldStop()) break;
