@@ -212,3 +212,80 @@ body {
   padding: 20px 24px;
   color: var(--color-error, #f87171);
 }
+
+.trim-timeline {
+  background: var(--color-background-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-container, 16px);
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.tl-track {
+  position: relative;
+  height: 52px;
+  border-radius: 8px;
+  overflow: hidden;
+  background: var(--color-background-card);
+  cursor: pointer;
+  touch-action: none;
+}
+
+.tl-thumbs {
+  position: absolute;
+  inset: 0;
+  display: flex;
+}
+
+.tl-thumbs img {
+  flex: 1 1 0;
+  min-width: 0;
+  height: 100%;
+  object-fit: cover;
+  pointer-events: none;
+}
+
+.tl-dim {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  background: rgba(0, 0, 0, 0.55);
+  pointer-events: none;
+}
+
+.tl-selection {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  border: 2px solid var(--color-accent, #e94560);
+  box-sizing: border-box;
+  pointer-events: none;
+}
+
+.tl-playhead {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  margin-left: -1px;
+  background: #fff;
+  box-shadow: 0 0 4px rgba(0, 0, 0, 0.6);
+  pointer-events: none;
+}
+
+.tl-handle {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 12px;
+  margin-left: -6px;
+  background: var(--color-accent, #e94560);
+  border: 2px solid #fff;
+  border-radius: 6px;
+  box-sizing: border-box;
+  cursor: ew-resize;
+  touch-action: none;
+  z-index: 2;
+}

@@ -11,7 +11,7 @@ import {
   Output,
 } from "mediabunny";
 import type { VideoCodec } from "mediabunny";
-import type { CropRect, MediaMeta } from "./model";
+import type { CropRect, MediaMeta, TrimRange } from "./model";
 
 export class ExportCancelledError extends Error {
   constructor() {
@@ -90,6 +90,7 @@ function sleep(ms: number): Promise<void> {
 export interface ExportOptions {
   input: Input;
   crop: CropRect;
+  trim: TrimRange;
   onProgress: (ratio: number) => void;
   isCancelled: () => boolean;
 }
@@ -106,6 +107,11 @@ export async function exportCropped(options: ExportOptions): Promise<ExportResul
   if (!videoTrack) throw new Error("No video track was found in this file.");
   const audioTrack = await input.getPrimaryAudioTrack();
   const durationSec = await input.computeDuration();
+  const trimStart = Math.max(0, Math.min(options.trim.startSec, Math.max(0, durationSec - 0.1)));
+  const trimEnd = Math.max(trimStart + 0.1, Math.min(options.trim.endSec, durationSec > 0 ? durationSec : options.trim.endSec));
+  const rangeSec = trimEnd - trimStart;
+  const startUs = Math.round(trimStart * 1_000_000);
+  const endUs = Math.round(trimEnd * 1_000_000);
   const stats = await videoTrack.computePacketStats(50).catch(() => null);
   const framerate = stats && stats.averagePacketRate > 0 ? Math.max(1, Math.min(120, Math.round(stats.averagePacketRate))) : 30;
   const bitrate = Math.max(1_000_000, Math.min(25_000_000, Math.round(crop.width * crop.height * framerate * 0.15)));
@@ -147,14 +153,17 @@ export async function exportCropped(options: ExportOptions): Promise<ExportResul
       let first = true;
       for await (const packet of sink.packets()) {
         if (options.isCancelled() || failure) break;
+        if (packet.timestamp >= trimEnd) break;
+        if (trimStart > 0 && packet.timestamp < trimStart) continue;
+        const outPacket = trimStart > 0 ? packet.clone({ timestamp: packet.timestamp - trimStart }) : packet;
         if (first && config) {
-          await audioSource.add(packet, { decoderConfig: config });
+          await audioSource.add(outPacket, { decoderConfig: config });
           first = false;
         } else {
-          await audioSource.add(packet);
+          await audioSource.add(outPacket);
         }
       }
-      if (!options.isCancelled() && !failure) audioCopied = true;
+      if (!options.isCancelled() && !failure && !first) audioCopied = true;
     } catch (err) {
       noteFailure(err);
     }
@@ -181,17 +190,21 @@ export async function exportCropped(options: ExportOptions): Promise<ExportResul
           frame.close();
           return;
         }
+        if (frame.timestamp < startUs || frame.timestamp >= endUs) {
+          return;
+        }
+        const rebased = frame.timestamp - startUs;
         ctx.drawImage(frame, crop.x, crop.y, crop.width, crop.height, 0, 0, crop.width, crop.height);
         const cropped = new VideoFrame(canvas, {
-          timestamp: frame.timestamp,
+          timestamp: rebased,
           ...(frame.duration != null ? { duration: frame.duration } : {}),
         });
-        const keyFrame = frame.timestamp - lastKeyFrameAt >= 2_000_000;
-        if (keyFrame) lastKeyFrameAt = frame.timestamp;
+        const keyFrame = rebased - lastKeyFrameAt >= 2_000_000;
+        if (keyFrame) lastKeyFrameAt = rebased;
         encoder.encode(cropped, { keyFrame });
         cropped.close();
-        if (durationSec > 0) {
-          options.onProgress(Math.min(1, frame.timestamp / 1_000_000 / durationSec));
+        if (rangeSec > 0) {
+          options.onProgress(Math.max(0, Math.min(1, rebased / 1_000_000 / rangeSec)));
         }
       } catch (err) {
         noteFailure(err);
@@ -205,8 +218,11 @@ export async function exportCropped(options: ExportOptions): Promise<ExportResul
 
   const sink = new EncodedPacketSink(videoTrack);
   try {
-    for await (const packet of sink.packets()) {
+    const startPacket = trimStart > 0 ? await sink.getKeyPacket(trimStart).catch(() => null) : null;
+    const feedMarginSec = 2;
+    for await (const packet of startPacket ? sink.packets(startPacket) : sink.packets()) {
       if (options.isCancelled() || failure) break;
+      if (packet.timestamp >= trimEnd + feedMarginSec) break;
       decoder.decode(packet.toEncodedVideoChunk());
       while ((decoder.decodeQueueSize > 8 || encoder.encodeQueueSize > 8) && !options.isCancelled() && !failure) {
         await sleep(10);

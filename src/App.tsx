@@ -10,7 +10,7 @@ import { VStack } from "@astryxdesign/core/VStack";
 import { StackItem } from "@astryxdesign/core/Stack";
 import { Spinner } from "@astryxdesign/core/Spinner";
 import { Clapperboard, FolderOpen } from "lucide-react";
-import type { ActiveTool, AspectPreset, Clip, CropRect } from "./model";
+import type { ActiveTool, AspectPreset, Clip, CropRect, ToolId, TrimRange } from "./model";
 import { evenRect } from "./model";
 import { ExportCancelledError, exportCropped, openInput, readMeta, webCodecsSupported } from "./exporter";
 
@@ -97,6 +97,21 @@ function fmtDuration(sec: number): string {
   return h > 0 ? `${h}:${String(m).padStart(2, "0")}:${ss}` : `${m}:${ss}`;
 }
 
+function clampTrim(next: TrimRange, durationSec: number): TrimRange {
+  const max = Math.max(0.1, durationSec);
+  let start = Math.round(Math.max(0, Math.min(next.startSec, max - 0.1)) * 1000) / 1000;
+  let end = Math.round(Math.max(start + 0.1, Math.min(next.endSec, max)) * 1000) / 1000;
+  if (end - start < 0.1) {
+    end = Math.round(Math.min(max, start + 0.1) * 1000) / 1000;
+    if (end - start < 0.1) start = Math.round(Math.max(0, end - 0.1) * 1000) / 1000;
+  }
+  return { startSec: start, endSec: end };
+}
+
+function fmtSec(sec: number): string {
+  return `${(Math.round(sec * 10) / 10).toFixed(1)}s`;
+}
+
 function fmtSize(bytes: number): string {
   if (bytes >= 1_000_000) return `${(bytes / 1_000_000).toFixed(1)} MB`;
   if (bytes >= 1_000) return `${(bytes / 1_000).toFixed(1)} KB`;
@@ -118,6 +133,11 @@ export default function App() {
   const [resultSize, setResultSize] = useState(0);
   const [usedCodec, setUsedCodec] = useState<string | null>(null);
   const [audioCopied, setAudioCopied] = useState<boolean | null>(null);
+  const [playheadSec, setPlayheadSec] = useState(0);
+  const [thumbs, setThumbs] = useState<string[]>([]);
+  const thumbsClipRef = useRef<string | null>(null);
+  const timelineRef = useRef<HTMLDivElement | null>(null);
+  const tlDragRef = useRef<"start" | "end" | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const stageRef = useRef<HTMLDivElement | null>(null);
   const videoRef = useRef<HTMLVideoElement | null>(null);
@@ -128,10 +148,24 @@ export default function App() {
   const clip = clips[0] ?? null;
   const ratio = ASPECTS.find((a) => a.value === aspect)?.ratio ?? null;
   const cropActive = activeTool === "crop";
+  const trimActive = activeTool === "trim";
+  const trimRef = useRef<TrimRange>({ startSec: 0, endSec: 0 });
+  const durationRef = useRef(0);
+  if (clip) {
+    trimRef.current = clip.trim;
+    durationRef.current = clip.meta.durationSec;
+  }
 
   const setCrop = useCallback(
     (crop: CropRect) => {
       setClips((prev) => prev.map((c, i) => (i === 0 ? { ...c, crop } : c)));
+    },
+    [],
+  );
+
+  const setTrim = useCallback(
+    (trim: TrimRange) => {
+      setClips((prev) => prev.map((c, i) => (i === 0 ? { ...c, trim } : c)));
     },
     [],
   );
@@ -143,6 +177,9 @@ export default function App() {
     setResultUrl(null);
     setUsedCodec(null);
     setAudioCopied(null);
+    setThumbs([]);
+    thumbsClipRef.current = null;
+    setPlayheadSec(0);
     if (!/\.mp4$/i.test(file.name) && file.type !== "video/mp4") {
       setError("Please choose an MP4 file.");
       return;
@@ -159,6 +196,7 @@ export default function App() {
         input,
         meta,
         crop: { x: 0, y: 0, width: meta.width, height: meta.height },
+        trim: { startSec: 0, endSec: meta.durationSec },
       };
       setClips((prev) => {
         for (const old of prev) {
@@ -180,6 +218,85 @@ export default function App() {
       cancelRef.current = true;
     };
   }, []);
+
+  useEffect(() => {
+    const video = videoRef.current;
+    if (!video) return;
+    const onTimeUpdate = () => {
+      setPlayheadSec(video.currentTime);
+      const trim = trimRef.current;
+      const duration = durationRef.current;
+      if (duration > 0 && trim.endSec < duration - 0.01 && video.currentTime >= trim.endSec) {
+        video.pause();
+      }
+    };
+    const onSeeked = () => setPlayheadSec(video.currentTime);
+    video.addEventListener("timeupdate", onTimeUpdate);
+    video.addEventListener("seeked", onSeeked);
+    return () => {
+      video.removeEventListener("timeupdate", onTimeUpdate);
+      video.removeEventListener("seeked", onSeeked);
+    };
+  }, [clip?.id]);
+
+  useEffect(() => {
+    if (!trimActive || !clip) return;
+    if (!(clip.meta.durationSec > 0)) return;
+    if (thumbsClipRef.current === clip.id) return;
+    thumbsClipRef.current = clip.id;
+    let cancelled = false;
+    let completed = false;
+    const duration = clip.meta.durationSec;
+    const count = 10;
+    const video = document.createElement("video");
+    video.muted = true;
+    video.playsInline = true;
+    video.preload = "auto";
+    video.src = clip.url;
+    const canvas = document.createElement("canvas");
+    const thumbHeight = 48;
+    const thumbWidth = Math.max(24, Math.round((thumbHeight * clip.meta.width) / clip.meta.height));
+    canvas.width = thumbWidth;
+    canvas.height = thumbHeight;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+    const seekTo = (t: number) =>
+      new Promise<void>((resolve) => {
+        const done = () => {
+          video.removeEventListener("seeked", done);
+          resolve();
+        };
+        video.addEventListener("seeked", done);
+        video.currentTime = t;
+      });
+    void (async () => {
+      try {
+        await new Promise<void>((resolve, reject) => {
+          video.addEventListener("loadeddata", () => resolve(), { once: true });
+          video.addEventListener("error", () => reject(new Error("thumbnail load failed")), { once: true });
+        });
+        const urls: string[] = [];
+        for (let i = 0; i < count; i++) {
+          if (cancelled) return;
+          const t = Math.max(0, Math.min(duration - 0.05, ((i + 0.5) / count) * duration));
+          await seekTo(t);
+          if (cancelled) return;
+          ctx.drawImage(video, 0, 0, thumbWidth, thumbHeight);
+          urls.push(canvas.toDataURL("image/jpeg", 0.7));
+          setThumbs([...urls]);
+        }
+        completed = true;
+      } catch {
+        if (!cancelled) setThumbs([]);
+      }
+    })();
+    return () => {
+      cancelled = true;
+      if (!completed) thumbsClipRef.current = null;
+      video.removeAttribute("src");
+      video.load();
+    };
+  }, [trimActive, clip?.id]);
 
   const beginDrag = (event: React.PointerEvent, mode: "move" | Handle) => {
     if (!clip || exporting || !cropActive) return;
@@ -241,9 +358,9 @@ export default function App() {
     dragRef.current = null;
   };
 
-  const toggleCropTool = () => {
-    videoRef.current?.pause();
-    setActiveTool((prev) => (prev === "crop" ? "none" : "crop"));
+  const toggleTool = (tool: ToolId) => {
+    if (tool === "crop") videoRef.current?.pause();
+    setActiveTool((prev) => (prev === tool ? "none" : tool));
   };
 
   const confirmCrop = () => {
@@ -262,6 +379,9 @@ export default function App() {
     setActiveTool("none");
     setError(null);
     setNotice(null);
+    setThumbs([]);
+    thumbsClipRef.current = null;
+    setPlayheadSec(0);
   };
 
   const changeAspect = (value: string) => {
@@ -290,6 +410,91 @@ export default function App() {
     setCrop(clampCrop({ ...clip.crop, [field]: value }, clip.meta.width, clip.meta.height, ratio));
   };
 
+  const updateTrimField = (field: keyof TrimRange, raw: string) => {
+    if (!clip || !trimActive) return;
+    const value = Number(raw);
+    if (!Number.isFinite(value)) return;
+    setTrim(clampTrim({ ...clip.trim, [field]: value }, clip.meta.durationSec));
+  };
+
+  const setTrimStartToPlayhead = () => {
+    if (!clip || !trimActive) return;
+    const t = videoRef.current?.currentTime ?? clip.trim.startSec;
+    setTrim(clampTrim({ ...clip.trim, startSec: t }, clip.meta.durationSec));
+  };
+
+  const setTrimEndToPlayhead = () => {
+    if (!clip || !trimActive) return;
+    const t = videoRef.current?.currentTime ?? clip.trim.endSec;
+    setTrim(clampTrim({ ...clip.trim, endSec: t }, clip.meta.durationSec));
+  };
+
+  const timelineFraction = (clientX: number): number | null => {
+    const el = timelineRef.current;
+    if (!el) return null;
+    const rect = el.getBoundingClientRect();
+    if (rect.width === 0) return null;
+    return Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
+  };
+
+  const seekFromTimeline = (clientX: number) => {
+    if (!clip) return;
+    const frac = timelineFraction(clientX);
+    if (frac === null) return;
+    const video = videoRef.current;
+    if (!video) return;
+    video.currentTime = frac * clip.meta.durationSec;
+    setPlayheadSec(video.currentTime);
+  };
+
+  const onTimelinePointerDown = (event: React.PointerEvent) => {
+    if (!clip || !trimActive) return;
+    seekFromTimeline(event.clientX);
+  };
+
+  const onTimelinePointerMove = (event: React.PointerEvent) => {
+    if (event.buttons !== 1 || tlDragRef.current) return;
+    seekFromTimeline(event.clientX);
+  };
+
+  const beginHandleDrag = (event: React.PointerEvent, which: "start" | "end") => {
+    if (!clip || exporting || !trimActive) return;
+    event.preventDefault();
+    event.stopPropagation();
+    (event.target as HTMLElement).setPointerCapture(event.pointerId);
+    tlDragRef.current = which;
+  };
+
+  const onHandleDragMove = (event: React.PointerEvent) => {
+    const which = tlDragRef.current;
+    if (!which || !clip) return;
+    const frac = timelineFraction(event.clientX);
+    if (frac === null) return;
+    const sec = frac * clip.meta.durationSec;
+    const next = clampTrim(
+      which === "start" ? { ...clip.trim, startSec: sec } : { ...clip.trim, endSec: sec },
+      clip.meta.durationSec,
+    );
+    setTrim(next);
+    const video = videoRef.current;
+    if (video) {
+      video.currentTime = which === "start" ? next.startSec : next.endSec;
+      setPlayheadSec(video.currentTime);
+    }
+  };
+
+  const endHandleDrag = () => {
+    tlDragRef.current = null;
+  };
+
+  const previewTrimRange = () => {
+    if (!clip || !trimActive) return;
+    const video = videoRef.current;
+    if (!video) return;
+    video.currentTime = clip.trim.startSec;
+    void video.play().catch(() => undefined);
+  };
+
   const runExport = async () => {
     if (!clip || exporting) return;
     if (!supported) {
@@ -309,12 +514,13 @@ export default function App() {
       const res = await exportCropped({
         input: clip.input,
         crop: out,
+        trim: clip.trim,
         onProgress: (value) => setProgress(value),
         isCancelled: () => cancelRef.current,
       });
       setUsedCodec(res.codecLabel);
       setAudioCopied(res.audioCopied);
-      const suggested = `${clip.file.name.replace(/\.mp4$/i, "")}-cropped.mp4`;
+      const suggested = `${clip.file.name.replace(/\.mp4$/i, "")}-edited.mp4`;
       const url = URL.createObjectURL(res.blob);
       setResultUrl(url);
       setResultName(suggested);
@@ -357,6 +563,9 @@ export default function App() {
   };
 
   const outRect = clip ? evenRect(clip.crop, clip.meta.width, clip.meta.height) : null;
+  const trimIsFull =
+    clip !== null && clip.trim.startSec <= 0.01 && clip.trim.endSec >= clip.meta.durationSec - 0.01;
+  const selectionSec = clip ? Math.max(0, clip.trim.endSec - clip.trim.startSec) : 0;
   const isFullFrame =
     clip !== null &&
     Math.round(clip.crop.x) === 0 &&
@@ -373,7 +582,7 @@ export default function App() {
             <StackItem size="fill">
               <Heading level={2}>Video Editor</Heading>
             </StackItem>
-            <Text type="supporting">Crop · WebCodecs</Text>
+            <Text type="supporting">Crop · Trim · WebCodecs</Text>
           </HStack>
         </header>
         <main className="shell-main">
@@ -437,7 +646,14 @@ export default function App() {
                       label="Crop"
                       variant={cropActive ? "primary" : "secondary"}
                       aria-pressed={cropActive}
-                      onClick={toggleCropTool}
+                      onClick={() => toggleTool("crop")}
+                      isDisabled={exporting}
+                    />
+                    <Button
+                      label="Trim"
+                      variant={trimActive ? "primary" : "secondary"}
+                      aria-pressed={trimActive}
+                      onClick={() => toggleTool("trim")}
                       isDisabled={exporting}
                     />
                     {cropActive && (
@@ -461,7 +677,7 @@ export default function App() {
                         }}
                       />
                     ) : (
-                      <Button label="Export cropped MP4" variant="primary" onClick={() => void runExport()} isDisabled={!supported} />
+                      <Button label="Export MP4" variant="primary" onClick={() => void runExport()} isDisabled={!supported} />
                     )}
                   </div>
                   {exporting && (
@@ -505,6 +721,55 @@ export default function App() {
                     )}
                   </div>
                 </div>
+                {trimActive && (
+                  <div className="trim-timeline">
+                    <div
+                      className="tl-track"
+                      ref={timelineRef}
+                      onPointerDown={onTimelinePointerDown}
+                      onPointerMove={onTimelinePointerMove}
+                    >
+                      <div className="tl-thumbs">
+                        {thumbs.map((src, i) => (
+                          <img key={i} src={src} alt="" draggable={false} />
+                        ))}
+                      </div>
+                      <div
+                        className="tl-dim"
+                        style={{ left: 0, width: `${(clip.trim.startSec / clip.meta.durationSec) * 100}%` }}
+                      />
+                      <div
+                        className="tl-dim"
+                        style={{ left: `${(clip.trim.endSec / clip.meta.durationSec) * 100}%`, right: 0 }}
+                      />
+                      <div
+                        className="tl-selection"
+                        style={{
+                          left: `${(clip.trim.startSec / clip.meta.durationSec) * 100}%`,
+                          width: `${((clip.trim.endSec - clip.trim.startSec) / clip.meta.durationSec) * 100}%`,
+                        }}
+                      />
+                      <div className="tl-playhead" style={{ left: `${(playheadSec / clip.meta.durationSec) * 100}%` }} />
+                      <div
+                        className="tl-handle"
+                        style={{ left: `${(clip.trim.startSec / clip.meta.durationSec) * 100}%` }}
+                        onPointerDown={(e) => beginHandleDrag(e, "start")}
+                        onPointerMove={onHandleDragMove}
+                        onPointerUp={endHandleDrag}
+                        onPointerCancel={endHandleDrag}
+                      />
+                      <div
+                        className="tl-handle"
+                        style={{ left: `${(clip.trim.endSec / clip.meta.durationSec) * 100}%` }}
+                        onPointerDown={(e) => beginHandleDrag(e, "end")}
+                        onPointerMove={onHandleDragMove}
+                        onPointerUp={endHandleDrag}
+                        onPointerCancel={endHandleDrag}
+                      />
+                    </div>
+                    <Text type="supporting">Drag the handles to set the range, or click the track to seek.</Text>
+                  </div>
+                )}
                 <div className="panel">
                   <div className="meta-row">
                     <Text type="supporting">File: {clip.file.name}</Text>
@@ -537,6 +802,50 @@ export default function App() {
                         ? "Crop: full frame. Press Crop in the toolbar to edit it. Output size is adjusted to even numbers."
                         : `Crop: ${Math.round(clip.crop.x)}, ${Math.round(clip.crop.y)} · ${outRect.width} × ${outRect.height}. Press Crop in the toolbar to edit it. Output size is adjusted to even numbers.`}
                   </Text>
+                  {trimActive ? (
+                    <>
+                      <div className="field-row">
+                        <div className="field">
+                          <label htmlFor="trim-start">Start (s)</label>
+                          <input
+                            id="trim-start"
+                            type="number"
+                            min={0}
+                            max={clip.meta.durationSec}
+                            step={0.1}
+                            value={Math.round(clip.trim.startSec * 100) / 100}
+                            onChange={(e) => updateTrimField("startSec", e.target.value)}
+                          />
+                        </div>
+                        <div className="field">
+                          <label htmlFor="trim-end">End (s)</label>
+                          <input
+                            id="trim-end"
+                            type="number"
+                            min={0}
+                            max={clip.meta.durationSec}
+                            step={0.1}
+                            value={Math.round(clip.trim.endSec * 100) / 100}
+                            onChange={(e) => updateTrimField("endSec", e.target.value)}
+                          />
+                        </div>
+                      </div>
+                      <HStack gap={3} vAlign="center">
+                        <Button label="Set start to playhead" variant="secondary" onClick={setTrimStartToPlayhead} isDisabled={exporting} />
+                        <Button label="Set end to playhead" variant="secondary" onClick={setTrimEndToPlayhead} isDisabled={exporting} />
+                        <Button label="Preview range" variant="secondary" onClick={previewTrimRange} isDisabled={exporting} />
+                      </HStack>
+                      <Text type="supporting">
+                        Selection: {fmtSec(selectionSec)} of {fmtSec(clip.meta.durationSec)}
+                      </Text>
+                    </>
+                  ) : (
+                    <Text type="supporting">
+                      {trimIsFull
+                        ? "Trim: full length. Press Trim in the toolbar to edit it."
+                        : `Trim: ${fmtSec(clip.trim.startSec)} – ${fmtSec(clip.trim.endSec)} (${fmtSec(selectionSec)}). Press Trim in the toolbar to edit it.`}
+                    </Text>
+                  )}
                   {resultUrl && !exporting && (
                     <VStack gap={2}>
                       <Text type="supporting">

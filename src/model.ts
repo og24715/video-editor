@@ -7,6 +7,11 @@ export interface CropRect {
   height: number;
 }
 
+export interface TrimRange {
+  startSec: number;
+  endSec: number;
+}
+
 export interface MediaMeta {
   width: number;
   height: number;
@@ -23,11 +28,12 @@ export interface Clip {
   input: Input;
   meta: MediaMeta;
   crop: CropRect;
+  trim: TrimRange;
 }
 
 export type AspectPreset = "free" | "16:9" | "9:16" | "1:1" | "4:3";
 
-export type ToolId = "crop";
+export type ToolId = "crop" | "trim";
 
 export type ActiveTool = "none" | ToolId;
 
