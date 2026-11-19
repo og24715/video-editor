@@ -12,8 +12,9 @@ these terms with these meanings.
 | **Clip** | A copy of a Media placed on a Track. Each Clip has its own Crop plus a Trim (Video) or a Duration (Image), independent of the source Media and of other Clips of the same Media. Called a timeline item in code (`TimelineItem`). |
 | **Text clip** | A Clip whose content is text rather than Media. It sits on an Overlay track and has a Duration and a text style (font size, color, outline, position) instead of a Crop and Trim. |
 | **Track** | One lane of the Timeline holding Clips. The bottom track is the Base track; tracks above it are Overlay tracks. |
-| **Base track** | The first track (V1). Its Clips play back-to-back in order and fill the Stage. Its audio is copied in a Timeline export when there are no Audio clips, and is mixed with the Audio clips when there are. |
-| **Overlay track** | Any track above the Base track (V2, V3, …). Its Clips sit at an explicit start time and rectangle on top of the Base track, picture-in-picture style, and are silent. |
+| **Base track** | The first track (V1). Its Clips play back-to-back in order and fill the Stage. Its audio is copied in a Timeline export when nothing needs mixing, and is mixed with the Audio clips and any audible Overlay clips when there are. |
+| **Overlay track** | Any track above the Base track (V2, V3, …). Its Clips sit at an explicit start time and rectangle on top of the Base track, picture-in-picture style. An Overlay Clip's own audio plays in the preview and is mixed into a Timeline export at the Clip's Gain when its gain is above 0. |
+| **Gain** | A Clip's audio volume multiplier (0–2, default 1). It applies to Audio clips and to Overlay Video clips in the preview (capped at 1×) and in mixed Timeline exports (full range). A gain of 0 keeps the Clip silent. |
 | **Audio track** | A Track below the video Tracks (A1, A2, …) that holds Audio clips at explicit start times. Audio tracks are mixed together and with the Base track's audio in a Timeline export. |
 | **Audio clip** | A Clip of an Audio Media on an Audio track. It has a Trim, a start time, a Gain, and a Waveform. |
 | **Waveform** | The min/max peak picture of an Audio Media, drawn in its pool card and in each Audio clip; trimming a clip windows the Waveform to the trimmed range. |

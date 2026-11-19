@@ -420,6 +420,7 @@ export default function App() {
   const [audioCopied, setAudioCopied] = useState<boolean | null>(null);
   const [audioMixed, setAudioMixed] = useState(false);
   const [audioMixedCodec, setAudioMixedCodec] = useState<string | null>(null);
+  const [audioMixParts, setAudioMixParts] = useState<string | null>(null);
   const [cropClipId, setCropClipId] = useState<string | null>(null);
   const [drawerItemId, setDrawerItemId] = useState<string | null>(null);
   const [drawerTextItemId, setDrawerTextItemId] = useState<string | null>(null);
@@ -726,6 +727,9 @@ export default function App() {
         for (const entry of trackLayout.items) {
           const el = tlVideoRefs.current.get(entry.item.id);
           if (!el) continue;
+          const overlayGain = entry.item.gain ?? 1;
+          el.muted = !(entry.clip?.meta.hasAudio ?? false) || overlayGain <= 0;
+          el.volume = Math.max(0, Math.min(1, overlayGain));
           const local = globalSec - entry.startSec;
           if (local < 0 || local > entry.durationSec) {
             if (!el.paused) el.pause();
@@ -1728,6 +1732,7 @@ export default function App() {
     setAudioCopied(null);
     setAudioMixed(false);
     setAudioMixedCodec(null);
+    setAudioMixParts(null);
     cancelRef.current = false;
     setProgress(0);
     setExporting(true);
@@ -1780,6 +1785,8 @@ export default function App() {
               durationSec: entry.clip.kind === "image" ? entry.durationSec : undefined,
               startSec: entry.startSec,
               rect: entry.item.rect,
+              gain: entry.item.gain ?? 1,
+              hasAudio: entry.clip.meta.hasAudio,
             });
           }
         }
@@ -1816,6 +1823,7 @@ export default function App() {
         setAudioCopied(res.audioCopied);
         setAudioMixed(res.audioMixed);
         setAudioMixedCodec(res.audioCodecLabel);
+        setAudioMixParts(res.audioMixParts);
         setResultFormat("mp4");
         setResultTimeline(true);
         suggested = `${clip.file.name.replace(/\.(mp4|wav|mp3|m4a|aac|ogg|flac)$/i, "")}-timeline.mp4`;
@@ -1909,7 +1917,7 @@ export default function App() {
   const selectionSec = clip ? Math.max(0, clip.trim.endSec - clip.trim.startSec) : 0;
   const resultAudioText = resultTimeline
     ? audioMixed
-      ? `Audio mixed (base track + audio clips, ${audioMixedCodec ?? "encoded"})`
+      ? `Audio mixed (${audioMixParts ?? "base track + audio clips"}, ${audioMixedCodec ?? "encoded"})`
       : audioCopied
         ? "Audio copied without re-encoding (base track)"
         : "No audio track"
@@ -2371,7 +2379,7 @@ export default function App() {
                                     }}
                                     src={entryClip.url}
                                     playsInline
-                                    muted
+                                    muted={!entryClip.meta.hasAudio || (entry.item.gain ?? 1) <= 0}
                                     style={subRectVideoStyle(entryClip.meta, entry.item.crop)}
                                   />
                                 )}
@@ -3104,10 +3112,12 @@ export default function App() {
                     <Text type="supporting">
                       Total duration: {fmtSec(tlTotalSec)} · {timeline.tracks.length + timeline.audioTracks.length} track
                       {timeline.tracks.length + timeline.audioTracks.length === 1 ? "" : "s"} · Export MP4 exports the whole
-                      timeline. Base-track audio is used as-is when there are no audio clips; when audio clips
-                      are present, the base audio and audio clips are mixed. Overlay video clips are silent.
+                      timeline. Base-track audio is copied as-is when nothing needs mixing; when audio clips
+                      are present or overlay clips have audible audio, the base audio, overlay audio, and audio
+                      clips are mixed at their gains.
                     </Text>
                     {(tlLayout.tracks[0]?.items.some((entry) => entry.clip?.meta.hasAudio) ||
+                      tlLayout.tracks.slice(1).some((track) => track.items.some((entry) => entry.clip?.meta.hasAudio)) ||
                       tlAudioLayout.tracks.some((track) => track.items.length > 0)) && (
                       <div className="base-gain-row">
                         <Text type="supporting">Base audio gain</Text>
@@ -3581,6 +3591,56 @@ export default function App() {
                             </div>
                           ))}
                         </div>
+                        {selectedTl.entry.clip.kind === "video" && selectedTl.entry.clip.meta.hasAudio && (
+                          <>
+                            <div className="field-row">
+                              <div className="field">
+                                <label htmlFor="overlay-item-gain">Gain (0–2)</label>
+                                <input
+                                  id="overlay-item-gain"
+                                  type="number"
+                                  min={0}
+                                  max={2}
+                                  step={0.05}
+                                  value={Math.round((selectedTl.entry.item.gain ?? 1) * 100) / 100}
+                                  disabled={exporting}
+                                  onChange={(e) => {
+                                    const value = Number(e.target.value);
+                                    if (Number.isFinite(value)) {
+                                      updateTlItem(selectedTl.trackIndex, selectedTl.entry.item.id, {
+                                        gain: Math.max(0, Math.min(2, value)),
+                                      });
+                                    }
+                                  }}
+                                />
+                              </div>
+                            </div>
+                            <div className="base-gain-row">
+                              <Text type="supporting">Clip gain</Text>
+                              <div className="base-gain-slider">
+                                <Slider
+                                  data-testid="overlay-clip-gain"
+                                  label="Overlay clip gain"
+                                  isLabelHidden
+                                  valueDisplay="none"
+                                  min={0}
+                                  max={2}
+                                  step={0.05}
+                                  value={selectedTl.entry.item.gain ?? 1}
+                                  isDisabled={exporting}
+                                  onChange={(value: number) =>
+                                    updateTlItem(selectedTl.trackIndex, selectedTl.entry.item.id, { gain: value })
+                                  }
+                                />
+                              </div>
+                              <Text type="supporting">{(selectedTl.entry.item.gain ?? 1).toFixed(2)}×</Text>
+                            </div>
+                            <Text type="supporting">
+                              This clip's audio plays in the preview and is mixed into timeline exports at this
+                              gain. Set it to 0 to keep the clip silent.
+                            </Text>
+                          </>
+                        )}
                         <HStack gap={3} vAlign="center">
                           <Button
                             label="Picture in picture"

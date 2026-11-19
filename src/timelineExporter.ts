@@ -35,6 +35,8 @@ export interface TimelineOverlayItemSpec {
   durationSec?: number;
   startSec: number;
   rect: TileRect;
+  gain?: number;
+  hasAudio?: boolean;
 }
 
 export interface TimelineTextItemSpec {
@@ -70,6 +72,7 @@ export interface TimelineExportResult {
   audioCopied: boolean;
   audioMixed: boolean;
   audioCodecLabel: string | null;
+  audioMixParts: string | null;
   outputDurationSec: number;
 }
 
@@ -85,6 +88,8 @@ interface ResolvedItem {
   durationSec: number;
   rect: TileRect;
   isBase: boolean;
+  gain: number;
+  hasAudio: boolean;
   text?: string;
   style?: TextStyle;
 }
@@ -149,14 +154,23 @@ async function decodeAudioFile(
   return decoded;
 }
 
+interface MixedAudioResult {
+  buffer: AudioBuffer;
+  parts: string[];
+}
+
 async function buildMixedAudio(
   baseItems: ResolvedItem[],
+  overlayItems: ResolvedItem[],
   audioClips: TimelineAudioClipSpec[],
   baseAudioGain: number,
   totalDurationSec: number,
-): Promise<AudioBuffer> {
+): Promise<MixedAudioResult> {
   const cache = new Map<File, AudioBuffer | null>();
   const placements: MixPlacement[] = [];
+  let usedBase = false;
+  let usedOverlay = false;
+  let usedAudioClips = false;
   for (const item of baseItems) {
     if (item.kind !== "video" || !item.file) continue;
     const buffer = await decodeAudioFile(item.file, cache);
@@ -171,6 +185,25 @@ async function buildMixedAudio(
       durationSec,
       gain: Math.max(0, Math.min(2, baseAudioGain)),
     });
+    usedBase = true;
+  }
+  for (const item of overlayItems) {
+    if (item.kind !== "video" || !item.file || !item.hasAudio) continue;
+    const gain = Math.max(0, Math.min(2, item.gain));
+    if (gain <= 0) continue;
+    const buffer = await decodeAudioFile(item.file, cache);
+    if (!buffer) continue;
+    const offsetSec = Math.max(0, Math.min(item.trim.startSec, buffer.duration));
+    const durationSec = Math.min(item.durationSec, Math.max(0, buffer.duration - offsetSec));
+    if (durationSec <= 0) continue;
+    placements.push({
+      buffer,
+      whenSec: Math.max(0, item.startSec),
+      offsetSec,
+      durationSec,
+      gain,
+    });
+    usedOverlay = true;
   }
   for (const spec of audioClips) {
     const buffer = spec.buffer ?? (await decodeAudioFile(spec.file, cache));
@@ -188,6 +221,7 @@ async function buildMixedAudio(
       durationSec,
       gain: Math.max(0, Math.min(2, spec.gain)),
     });
+    usedAudioClips = true;
   }
   const frameCount = Math.max(1, Math.ceil(totalDurationSec * MIX_SAMPLE_RATE));
   const offline = new OfflineAudioContext(2, frameCount, MIX_SAMPLE_RATE);
@@ -209,7 +243,12 @@ async function buildMixedAudio(
     const durationSec = Math.min(placement.durationSec, totalDurationSec - placement.whenSec);
     if (durationSec > 0) source.start(placement.whenSec, placement.offsetSec, durationSec);
   }
-  return offline.startRendering();
+  const buffer = await offline.startRendering();
+  const parts: string[] = [];
+  if (usedBase) parts.push("base track");
+  if (usedOverlay) parts.push("overlay clips");
+  if (usedAudioClips) parts.push("audio clips");
+  return { buffer, parts };
 }
 
 interface MixedAudioEncoding {
@@ -340,6 +379,8 @@ export async function exportTimeline(options: TimelineExportOptions): Promise<Ti
         durationSec,
         rect: resolvedRect,
         isBase,
+        gain: 1,
+        hasAudio: false,
       };
       outputDuration = Math.max(outputDuration, startSec + durationSec);
       return resolved;
@@ -350,6 +391,7 @@ export async function exportTimeline(options: TimelineExportOptions): Promise<Ti
     const duration = await spec.input.computeDuration();
     const trim = clampRange(spec.trim, duration);
     const durationSec = trim.endSec - trim.startSec;
+    const overlaySpec = isBase ? null : (spec as TimelineOverlayItemSpec);
     const resolved: ResolvedItem = {
       kind: "video",
       input: spec.input,
@@ -362,6 +404,8 @@ export async function exportTimeline(options: TimelineExportOptions): Promise<Ti
       durationSec,
       rect: resolvedRect,
       isBase,
+      gain: overlaySpec ? (overlaySpec.gain ?? 1) : 1,
+      hasAudio: overlaySpec ? (overlaySpec.hasAudio ?? false) : false,
     };
     outputDuration = Math.max(outputDuration, startSec + durationSec);
     return resolved;
@@ -395,6 +439,8 @@ export async function exportTimeline(options: TimelineExportOptions): Promise<Ti
       durationSec,
       rect: { x: 0, y: 0, width: outWidth, height: outHeight },
       isBase: false,
+      gain: 1,
+      hasAudio: false,
       text: spec.text,
       style: spec.style,
     });
@@ -429,15 +475,19 @@ export async function exportTimeline(options: TimelineExportOptions): Promise<Ti
     configs.push(config);
   }
 
-  const mixAudio = options.audioClips.length > 0;
-  const mixedBuffer = mixAudio
+  const mixAudio =
+    options.audioClips.length > 0 ||
+    options.overlays.some((o) => o.kind === "video" && (o.hasAudio ?? false) && (o.gain ?? 1) > 0);
+  const mixed = mixAudio
     ? await buildMixedAudio(
         items.filter((item) => item.isBase),
+        items.filter((item) => !item.isBase),
         options.audioClips,
         options.baseAudioGain,
         outputDuration,
       )
     : null;
+  const mixedBuffer = mixed ? mixed.buffer : null;
   const mixedEncoding = mixAudio ? await chooseMixedAudioEncoding() : null;
 
   interface AudioPlanItem {
@@ -613,6 +663,7 @@ export async function exportTimeline(options: TimelineExportOptions): Promise<Ti
     audioCopied,
     audioMixed,
     audioCodecLabel: mixedEncoding ? mixedEncoding.label : null,
+    audioMixParts: mixed && mixed.parts.length > 0 ? mixed.parts.join(" + ") : null,
     outputDurationSec: outputDuration,
   };
 }
