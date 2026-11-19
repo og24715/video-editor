@@ -75,6 +75,8 @@ body {
 
 .pool-item {
   cursor: grab;
+  -webkit-user-select: none;
+  user-select: none;
 }
 
 .pool-item.active {
@@ -290,6 +292,8 @@ body {
 }
 
 .layout-tile {
+  -webkit-user-select: none;
+  user-select: none;
   position: absolute;
   box-sizing: border-box;
   outline: 2px solid rgba(255, 255, 255, 0.4);
@@ -428,6 +432,8 @@ body {
 }
 
 .trim-timeline {
+  -webkit-user-select: none;
+  user-select: none;
   background: var(--color-background-surface);
   border: 1px solid var(--color-border);
   border-radius: var(--radius-container, 16px);
@@ -454,6 +460,7 @@ body {
 }
 
 .tl-thumbs img {
+  -webkit-user-drag: none;
   flex: 1 1 0;
   min-width: 0;
   height: 100%;
@@ -505,6 +512,8 @@ body {
 }
 
 .tl-strip {
+  -webkit-user-select: none;
+  user-select: none;
   background: var(--color-background-surface);
   border: 1px solid var(--color-border);
   border-radius: var(--radius-container, 16px);
@@ -614,6 +623,8 @@ body {
 }
 
 .tl-base-video {
+  -webkit-user-select: none;
+  user-select: none;
   position: absolute;
   inset: 0;
   line-height: 0;
