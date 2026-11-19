@@ -133,6 +133,63 @@ body {
   height: auto;
 }
 
+.layout-wrap {
+  width: 100%;
+  max-width: 880px;
+  line-height: normal;
+}
+
+.layout-stage {
+  position: relative;
+  width: 100%;
+  background: #000;
+  border-radius: 8px;
+  overflow: hidden;
+  line-height: 0;
+}
+
+.layout-tile {
+  position: absolute;
+  box-sizing: border-box;
+  outline: 2px solid rgba(255, 255, 255, 0.4);
+  outline-offset: -2px;
+  overflow: hidden;
+  cursor: move;
+  touch-action: none;
+  background: #111;
+}
+
+.layout-tile video {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: fill;
+  pointer-events: none;
+}
+
+.layout-tile-handle {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  width: 18px;
+  height: 18px;
+  background: var(--color-accent, #e94560);
+  border: 2px solid #fff;
+  border-radius: 5px 0 0 0;
+  box-sizing: border-box;
+  cursor: nwse-resize;
+  touch-action: none;
+  z-index: 3;
+}
+
+.layout-controls {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+  padding-top: 14px;
+}
+
 .crop-rect {
   position: absolute;
   border: 2px solid var(--color-accent, #e94560);

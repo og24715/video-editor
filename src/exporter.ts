@@ -51,13 +51,13 @@ export async function readMeta(input: Input): Promise<MediaMeta> {
   };
 }
 
-interface CodecChoice {
+export interface CodecChoice {
   config: VideoEncoderConfig;
   mediabunnyCodec: VideoCodec;
   label: string;
 }
 
-async function chooseCodec(width: number, height: number, framerate: number, bitrate: number): Promise<CodecChoice> {
+export async function chooseCodec(width: number, height: number, framerate: number, bitrate: number): Promise<CodecChoice> {
   const candidates: { encoderCodec: string; mediabunnyCodec: VideoCodec; label: string }[] = [
     { encoderCodec: "avc1.640034", mediabunnyCodec: "avc", label: "H.264 (AVC)" },
     { encoderCodec: "avc1.640028", mediabunnyCodec: "avc", label: "H.264 (AVC)" },
