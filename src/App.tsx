@@ -812,30 +812,6 @@ export default function App() {
     setActiveTool(next);
   };
 
-  const openDifferentFile = () => {
-    setClips((prev) => {
-      for (const old of prev) {
-        old.input.dispose();
-        URL.revokeObjectURL(old.url);
-      }
-      return [];
-    });
-    setActiveClipId(null);
-    setCropClipId(null);
-    setLayout(null);
-    setLayoutPlaying(false);
-    setTimeline(null);
-    setSelectedTlItemId(null);
-    setTlPlayheadSec(0);
-    tlGlobalRef.current = 0;
-    setTlThumbs({});
-    setResultTimeline(false);
-    setResultUrl(null);
-    setActiveTool("none");
-    setError(null);
-    setNotice(null);
-  };
-
   const clipCropAspect = useCallback((target: Clip): number => {
     const out = evenRect(target.crop, target.meta.width, target.meta.height);
     return out.height > 0 ? out.width / out.height : target.meta.width / target.meta.height;
@@ -2030,7 +2006,6 @@ export default function App() {
               <div className="editor-grid">
                 <div className="toolbar-sticky">
                   <div className="toolbar">
-                    <Button label="Open a different file" variant="secondary" onClick={openDifferentFile} isDisabled={exporting} />
                     <Button
                       label="Timeline"
                       variant={timelineActive ? "primary" : "secondary"}
