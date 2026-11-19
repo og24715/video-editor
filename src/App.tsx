@@ -13,7 +13,7 @@ import { VStack } from "@astryxdesign/core/VStack";
 import { Spinner } from "@astryxdesign/core/Spinner";
 import { FolderOpen } from "lucide-react";
 import type { ActiveTool, AspectPreset, Clip, CropRect, LayoutState, LayoutTile, TileRect, TimelineItem, TimelineState, TimelineTrack, ToolId, TrimRange } from "./model";
-import { clampOutputSize, droppedTileRect, evenRect, pipItemRect, pipRects, resizedTiles, sideBySideRects } from "./model";
+import { clampOutputSize, containRect, droppedTileRect, evenRect, pipItemRect, pipRects, resizedTiles, sideBySideRects } from "./model";
 import { ExportCancelledError, exportCropped, openInput, readMeta, webCodecsSupported } from "./exporter";
 import { exportComposite } from "./compositeExporter";
 import { exportTimeline } from "./timelineExporter";
@@ -189,6 +189,34 @@ function SeekBar(props: {
 
 function clampTimeToTrim(t: number, trim: TrimRange): number {
   return Math.max(trim.startSec, Math.min(trim.endSec, t));
+}
+
+function subRectVideoStyle(clip: Clip): React.CSSProperties {
+  const { meta } = clip;
+  const crop = evenRect(clip.crop, meta.width, meta.height);
+  if (!(meta.width > 0) || !(meta.height > 0) || !(crop.width > 0) || !(crop.height > 0)) {
+    return { left: "0%", top: "0%", width: "100%", height: "100%" };
+  }
+  return {
+    width: `${(meta.width / crop.width) * 100}%`,
+    height: `${(meta.height / crop.height) * 100}%`,
+    left: `${(-crop.x / crop.width) * 100}%`,
+    top: `${(-crop.y / crop.height) * 100}%`,
+    maxWidth: "none",
+    maxHeight: "none",
+  };
+}
+
+function baseVideoBoxStyle(clip: Clip, outputWidth: number, outputHeight: number): React.CSSProperties {
+  if (!(outputWidth > 0) || !(outputHeight > 0)) return { inset: 0 };
+  const crop = evenRect(clip.crop, clip.meta.width, clip.meta.height);
+  const fit = containRect(crop.width, crop.height, outputWidth, outputHeight);
+  return {
+    left: `${(fit.x / outputWidth) * 100}%`,
+    top: `${(fit.y / outputHeight) * 100}%`,
+    width: `${(fit.width / outputWidth) * 100}%`,
+    height: `${(fit.height / outputHeight) * 100}%`,
+  };
 }
 
 function fmtSize(bytes: number): string {
@@ -2257,7 +2285,11 @@ export default function App() {
                         style={{ aspectRatio: `${timeline.outputWidth} / ${timeline.outputHeight}` }}
                       >
                         {activeBaseEntry && (
-                          <div className="tl-base-video" key={activeBaseEntry.item.id}>
+                          <div
+                            className="tl-base-video"
+                            key={activeBaseEntry.item.id}
+                            style={baseVideoBoxStyle(activeBaseEntry.clip, timeline.outputWidth, timeline.outputHeight)}
+                          >
                             <video
                               ref={(el) => {
                                 if (el) tlVideoRefs.current.set(activeBaseEntry.item.id, el);
@@ -2265,6 +2297,7 @@ export default function App() {
                               }}
                               src={activeBaseEntry.clip.url}
                               playsInline
+                              style={subRectVideoStyle(activeBaseEntry.clip)}
                             />
                           </div>
                         )}
@@ -2305,6 +2338,7 @@ export default function App() {
                                   src={entry.clip.url}
                                   playsInline
                                   muted
+                                  style={subRectVideoStyle(entry.clip)}
                                 />
                                 {isSelected && (
                                   <div
@@ -2362,6 +2396,7 @@ export default function App() {
                                 }}
                                 src={tileClip.url}
                                 playsInline
+                                style={subRectVideoStyle(tileClip)}
                               />
                               <div
                                 className="layout-tile-handle"

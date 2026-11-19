@@ -322,8 +322,11 @@ body {
 
 .layout-tile video {
   display: block;
+  position: absolute;
   width: 100%;
   height: 100%;
+  max-width: none;
+  max-height: none;
   object-fit: fill;
   pointer-events: none;
 }
@@ -680,15 +683,17 @@ body {
   -webkit-user-select: none;
   user-select: none;
   position: absolute;
-  inset: 0;
+  overflow: hidden;
   line-height: 0;
 }
 
 .tl-base-video video {
   display: block;
-  width: 100%;
-  height: 100%;
-  object-fit: contain;
+  position: absolute;
+  max-width: none;
+  max-height: none;
+  object-fit: fill;
+  pointer-events: none;
 }
 
 .tl-overlay-tile.selected {
