@@ -13,6 +13,8 @@ import { VStack } from "@astryxdesign/core/VStack";
 import { Spinner } from "@astryxdesign/core/Spinner";
 import { Switch } from "@astryxdesign/core/Switch";
 import { TextArea } from "@astryxdesign/core/TextArea";
+import { NumberInput } from "@astryxdesign/core/NumberInput";
+import { ProgressBar } from "@astryxdesign/core/ProgressBar";
 import { FolderOpen, Type } from "lucide-react";
 import type { AspectPreset, ChromaKeySettings, Clip, CropRect, LayoutTile, MediaMeta, TextPosition, TextStyle, TileRect, TimelineItem, TimelineState, TimelineTrack, TrimRange } from "./model";
 import { DEFAULT_CHROMA_KEY, DEFAULT_IMAGE_DURATION_SEC, DEFAULT_TEXT_STYLE, WAVEFORM_PEAKS_PER_SEC, clampFadePair, clampOutputSize, clipFadeFactor, computeWaveformPeaks, containRect, evenRect, pipItemRect, refitRectToAspect, resizedTiles, timelineItemDurationSec } from "./model";
@@ -496,8 +498,6 @@ export default function App() {
     audioTracks: [],
     baseAudioGain: 1,
   }));
-  const [tlOutWText, setTlOutWText] = useState("");
-  const [tlOutHText, setTlOutHText] = useState("");
   const [selectedTlItemId, setSelectedTlItemId] = useState<string | null>(null);
   const [tlGhostVisible, setTlGhostVisible] = useState(false);
   const [tlGhostHot, setTlGhostHot] = useState(false);
@@ -568,11 +568,6 @@ export default function App() {
   const clipsRef = useRef<Clip[]>([]);
   clipsRef.current = clips;
   tlStateRef.current = timeline;
-
-  useEffect(() => {
-    setTlOutWText(timeline.outputWidth > 0 ? String(timeline.outputWidth) : "");
-    setTlOutHText(timeline.outputHeight > 0 ? String(timeline.outputHeight) : "");
-  }, [timeline.outputWidth, timeline.outputHeight]);
 
   const setCrop = useCallback((crop: CropRect) => {
     setClips((prev) => prev.map((c) => (c.id === cropClipId ? { ...c, crop } : c)));
@@ -1399,20 +1394,6 @@ export default function App() {
             },
       ),
     });
-  };
-
-  const commitTlOutputSize = (event?: React.FocusEvent<HTMLInputElement>) => {
-    const next = event?.relatedTarget as HTMLElement | null;
-    if (next && (next.id === "timeline-output-width" || next.id === "timeline-output-height")) return;
-    if (!timeline) return;
-    const width = Number(tlOutWText);
-    const height = Number(tlOutHText);
-    if (Number.isFinite(width) && Number.isFinite(height) && width > 0 && height > 0) {
-      applyTlOutputSize(width, height);
-    } else {
-      setTlOutWText(timeline.outputWidth > 0 ? String(timeline.outputWidth) : "");
-      setTlOutHText(timeline.outputHeight > 0 ? String(timeline.outputHeight) : "");
-    }
   };
 
   const baseInsertIndex = (rowEl: HTMLElement, clientX: number): number => {
@@ -3298,9 +3279,13 @@ export default function App() {
                   )}
                   {exporting && (
                     <div className="export-progress">
-                      <div className="progress-track">
-                        <div className="progress-fill" style={{ width: `${Math.round(progress * 100)}%` }} />
-                      </div>
+                      <ProgressBar
+                        label="Export progress"
+                        isLabelHidden
+                        value={Math.round(progress * 100)}
+                        max={100}
+                        className="export-progress-bar"
+                      />
                       <Text type="supporting">Exporting… {Math.round(progress * 100)}%</Text>
                     </div>
                   )}
@@ -3389,36 +3374,30 @@ export default function App() {
                     )}
                     <div className="field-row">
                       <div className="field">
-                        <label htmlFor="timeline-output-width">Output width</label>
-                        <input
+                        <NumberInput
                           id="timeline-output-width"
-                          type="number"
+                          label="Output width"
                           min={16}
                           max={7680}
                           step={2}
-                          value={tlOutWText}
-                          disabled={exporting}
-                          onChange={(e) => setTlOutWText(e.target.value)}
-                          onBlur={(e) => commitTlOutputSize(e)}
-                          onKeyDown={(e) => {
-                            if (e.key === "Enter") (e.target as HTMLInputElement).blur();
+                          value={timeline.outputWidth > 0 ? timeline.outputWidth : null}
+                          isDisabled={exporting}
+                          onChange={(value) => {
+                            if (timeline.outputHeight > 0) applyTlOutputSize(value, timeline.outputHeight);
                           }}
                         />
                       </div>
                       <div className="field">
-                        <label htmlFor="timeline-output-height">Output height</label>
-                        <input
+                        <NumberInput
                           id="timeline-output-height"
-                          type="number"
+                          label="Output height"
                           min={16}
                           max={7680}
                           step={2}
-                          value={tlOutHText}
-                          disabled={exporting}
-                          onChange={(e) => setTlOutHText(e.target.value)}
-                          onBlur={(e) => commitTlOutputSize(e)}
-                          onKeyDown={(e) => {
-                            if (e.key === "Enter") (e.target as HTMLInputElement).blur();
+                          value={timeline.outputHeight > 0 ? timeline.outputHeight : null}
+                          isDisabled={exporting}
+                          onChange={(value) => {
+                            if (timeline.outputWidth > 0) applyTlOutputSize(timeline.outputWidth, value);
                           }}
                         />
                       </div>

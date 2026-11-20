@@ -234,7 +234,7 @@ body {
   padding: 8px 12px;
 }
 
-.export-progress .progress-track {
+.export-progress .export-progress-bar {
   flex: 1;
 }
 
@@ -467,14 +467,14 @@ body {
   flex: 1;
 }
 
-.field label {
+.field > label {
   font-size: 12px;
   letter-spacing: 0.04em;
   color: var(--color-text-secondary);
   text-transform: uppercase;
 }
 
-.field input {
+.field > input {
   background: var(--color-background-card);
   border: 1px solid var(--color-border);
   border-radius: var(--radius-element, 10px);
@@ -485,7 +485,7 @@ body {
   box-sizing: border-box;
 }
 
-.field input:disabled {
+.field > input:disabled {
   opacity: 0.45;
   cursor: not-allowed;
 }
@@ -494,19 +494,6 @@ body {
   display: flex;
   flex-wrap: wrap;
   gap: 12px 28px;
-}
-
-.progress-track {
-  height: 10px;
-  border-radius: 999px;
-  background: var(--color-background-card);
-  overflow: hidden;
-}
-
-.progress-fill {
-  height: 100%;
-  background: var(--color-accent, #e94560);
-  transition: width 0.15s linear;
 }
 
 .error-box {
@@ -727,7 +714,7 @@ body {
   pointer-events: none;
 }
 
-.field input[type="color"] {
+.field > input[type="color"] {
   padding: 4px;
   height: 46px;
   cursor: pointer;
