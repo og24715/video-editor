@@ -490,6 +490,7 @@ export default function App() {
   const [cropClipId, setCropClipId] = useState<string | null>(null);
   const [drawerItemId, setDrawerItemId] = useState<string | null>(null);
   const [drawerTextItemId, setDrawerTextItemId] = useState<string | null>(null);
+  const [drawerAudioItemId, setDrawerAudioItemId] = useState<string | null>(null);
   const [tlStageSize, setTlStageSize] = useState<{ w: number; h: number }>({ w: 0, h: 0 });
   const [timeline, setTimeline] = useState<TimelineState>(() => ({
     outputWidth: 0,
@@ -1116,6 +1117,7 @@ export default function App() {
         : prev,
     );
     setSelectedTlItemId((prev) => (prev === itemId ? null : prev));
+    setDrawerAudioItemId((prev) => (prev === itemId ? null : prev));
   };
 
   const addAudioTrack = () => {
@@ -1129,6 +1131,7 @@ export default function App() {
     if (!current || !current.audioTracks[trackIndex]) return;
     const removedIds = new Set(current.audioTracks[trackIndex].items.map((it) => it.id));
     setSelectedTlItemId((selected) => (selected && removedIds.has(selected) ? null : selected));
+    setDrawerAudioItemId((current2) => (current2 && removedIds.has(current2) ? null : current2));
     setTimeline({ ...current, audioTracks: current.audioTracks.filter((_, i) => i !== trackIndex) });
   };
 
@@ -1344,6 +1347,7 @@ export default function App() {
     setCropClipId(null);
     setDrawerItemId(null);
     setDrawerTextItemId(itemId);
+    setDrawerAudioItemId(null);
   }, [tlEntries]);
 
   const reorderBaseItem = useCallback((itemId: string, rawTargetIndex: number) => {
@@ -1619,23 +1623,6 @@ export default function App() {
     if (target.kind === "track" && target.index === drag.trackIndex) return;
     moveItemAcrossTracks(drag.trackIndex, drag.itemId, target, event.clientX);
   };
-
-  const applyItemTrim = useCallback(
-    (trackIndex: number, entry: TlItemLayout, nextRaw: TrimRange) => {
-      if (!entry.clip) return;
-      const clamped = clampTrim(nextRaw, entry.clip.meta.durationSec);
-      if (trackIndex === 0) {
-        updateTlItem(0, entry.item.id, { trim: clamped });
-        return;
-      }
-      const delta = clamped.startSec - entry.item.trim.startSec;
-      updateTlItem(trackIndex, entry.item.id, {
-        trim: clamped,
-        startSec: Math.max(0, Math.round((entry.item.startSec + delta) * 1000) / 1000),
-      });
-    },
-    [updateTlItem],
-  );
 
   const beginTlEdgeDrag = (
     event: React.PointerEvent,
@@ -2068,27 +2055,27 @@ export default function App() {
   })();
   const activeBaseId = activeBaseEntry?.item.id ?? null;
   const activeBaseClip = activeBaseEntry?.clip ?? null;
-  const selectedTl = (() => {
-    if (!tlLayout || !selectedTlItemId) return null;
+  const drawerTl = (() => {
+    if (!tlLayout || !drawerItemId) return null;
     for (let ti = 0; ti < tlLayout.tracks.length; ti++) {
-      const found = tlLayout.tracks[ti].items.find((e) => e.item.id === selectedTlItemId);
+      const found = tlLayout.tracks[ti].items.find((e) => e.item.id === drawerItemId);
       if (found) return { entry: found, trackIndex: ti };
     }
     return null;
   })();
-  const selectedAudio = (() => {
-    if (!selectedTlItemId) return null;
+  const drawerAudio = (() => {
+    if (!drawerAudioItemId) return null;
     for (let ti = 0; ti < tlAudioLayout.tracks.length; ti++) {
-      const found = tlAudioLayout.tracks[ti].items.find((e) => e.item.id === selectedTlItemId);
+      const found = tlAudioLayout.tracks[ti].items.find((e) => e.item.id === drawerAudioItemId);
       if (found) return { entry: found, trackIndex: ti };
     }
     return null;
   })();
-  const selectedChromaKey: ChromaKeySettings = selectedTl?.entry.item.chromaKey ?? DEFAULT_CHROMA_KEY;
-  const updateSelectedChromaKey = (patch: Partial<ChromaKeySettings>) => {
-    if (!selectedTl) return;
-    updateTlItem(selectedTl.trackIndex, selectedTl.entry.item.id, {
-      chromaKey: { ...selectedChromaKey, ...patch },
+  const drawerChromaKey: ChromaKeySettings = drawerTl?.entry.item.chromaKey ?? DEFAULT_CHROMA_KEY;
+  const updateDrawerChromaKey = (patch: Partial<ChromaKeySettings>) => {
+    if (!drawerTl) return;
+    updateTlItem(drawerTl.trackIndex, drawerTl.entry.item.id, {
+      chromaKey: { ...drawerChromaKey, ...patch },
     });
   };
   const drawerItem = (() => {
@@ -2144,6 +2131,7 @@ export default function App() {
     setCropClipId(null);
     setDrawerItemId(null);
     setDrawerTextItemId(null);
+    setDrawerAudioItemId(null);
   };
   const isLargeTlCanvas =
     timeline.outputWidth > 0 && (timeline.outputWidth > 3840 || timeline.outputWidth * timeline.outputHeight > 8_300_000);
@@ -2306,6 +2294,8 @@ export default function App() {
                       if (item.kind !== "video") return;
                       setCropClipId(item.id);
                       setDrawerItemId(null);
+                      setDrawerTextItemId(null);
+                      setDrawerAudioItemId(null);
                     }}
                   >
                     {item.kind === "image" ? (
@@ -2786,6 +2776,8 @@ export default function App() {
                                 onDoubleClick={() => {
                                   setCropClipId(entryClip.id);
                                   setDrawerItemId(entry.item.id);
+                                  setDrawerTextItemId(null);
+                                  setDrawerAudioItemId(null);
                                 }}
                               >
                                 <div className="tl-thumbs">
@@ -2870,6 +2862,7 @@ export default function App() {
                                       setCropClipId(null);
                                       setDrawerItemId(null);
                                       setDrawerTextItemId(entry.item.id);
+                                      setDrawerAudioItemId(null);
                                     }}
                                     onPointerMove={onTlBlockDragMove}
                                     onPointerUp={endTlBlockDrag}
@@ -2940,6 +2933,8 @@ export default function App() {
                                   onDoubleClick={() => {
                                     setCropClipId(entryClip.id);
                                     setDrawerItemId(entry.item.id);
+                                    setDrawerTextItemId(null);
+                                    setDrawerAudioItemId(null);
                                   }}
                                   onPointerMove={onTlBlockDragMove}
                                   onPointerUp={endTlBlockDrag}
@@ -3072,6 +3067,12 @@ export default function App() {
                             style={blockStyle}
                             onPointerDown={(e) => beginTlBlockDrag(e, trackIndex, entry, "audio")}
                             onClick={() => setSelectedTlItemId(entry.item.id)}
+                            onDoubleClick={() => {
+                              setCropClipId(null);
+                              setDrawerItemId(null);
+                              setDrawerTextItemId(null);
+                              setDrawerAudioItemId(entry.item.id);
+                            }}
                             onPointerMove={onTlBlockDragMove}
                             onPointerUp={endTlBlockDrag}
                             onPointerCancel={endTlBlockDrag}
@@ -3518,582 +3519,6 @@ export default function App() {
                         </div>
                       </div>
                     ))}
-                    {selectedAudio && selectedAudio.entry.clip && (
-                      <>
-                        <Text type="supporting">
-                          Selected audio clip: {selectedAudio.entry.clip.file.name} (A{selectedAudio.trackIndex + 1}) · Waveform trims with the clip
-                        </Text>
-                        <div className="field-row">
-                          <div className="field">
-                            <NumberInput
-                              key={`${selectedAudio.entry.item.id}-start`}
-                              id="audio-item-start"
-                              label="Start (s)"
-                              min={0}
-                              step={0.1}
-                              value={Math.round(selectedAudio.entry.startSec * 100) / 100}
-                              isDisabled={exporting}
-                              hasNumberSteppers
-                              onChange={(value) => {
-                                updateAudioItem(selectedAudio.trackIndex, selectedAudio.entry.item.id, {
-                                  startSec: Math.max(0, Math.round(value * 1000) / 1000),
-                                });
-                              }}
-                            />
-                          </div>
-                          <div className="field">
-                            <NumberInput
-                              key={`${selectedAudio.entry.item.id}-trim-start`}
-                              id="audio-item-trim-start"
-                              label="Trim in (s)"
-                              min={0}
-                              max={selectedAudio.entry.clip.meta.durationSec}
-                              step={0.1}
-                              value={Math.round(selectedAudio.entry.item.trim.startSec * 100) / 100}
-                              isDisabled={exporting}
-                              hasNumberSteppers
-                              onChange={(value) => {
-                                applyAudioItemTrim(selectedAudio.trackIndex, selectedAudio.entry, {
-                                  ...selectedAudio.entry.item.trim,
-                                  startSec: value,
-                                });
-                              }}
-                            />
-                          </div>
-                          <div className="field">
-                            <NumberInput
-                              key={`${selectedAudio.entry.item.id}-trim-end`}
-                              id="audio-item-trim-end"
-                              label="Trim out (s)"
-                              min={0}
-                              max={selectedAudio.entry.clip.meta.durationSec}
-                              step={0.1}
-                              value={Math.round(selectedAudio.entry.item.trim.endSec * 100) / 100}
-                              isDisabled={exporting}
-                              hasNumberSteppers
-                              onChange={(value) => {
-                                applyAudioItemTrim(selectedAudio.trackIndex, selectedAudio.entry, {
-                                  ...selectedAudio.entry.item.trim,
-                                  endSec: value,
-                                });
-                              }}
-                            />
-                          </div>
-                          <div className="field">
-                            <NumberInput
-                              key={`${selectedAudio.entry.item.id}-gain`}
-                              id="audio-item-gain"
-                              label="Gain (0–2)"
-                              min={0}
-                              max={2}
-                              step={0.05}
-                              value={Math.round((selectedAudio.entry.item.gain ?? 1) * 100) / 100}
-                              isDisabled={exporting}
-                              hasNumberSteppers
-                              onChange={(value) => {
-                                updateAudioItem(selectedAudio.trackIndex, selectedAudio.entry.item.id, {
-                                  gain: Math.max(0, Math.min(2, value)),
-                                });
-                              }}
-                            />
-                          </div>
-                          <div className="field">
-                            <NumberInput
-                              key={`${selectedAudio.entry.item.id}-fade-in`}
-                              id="audio-item-fade-in"
-                              label="Fade in (s)"
-                              min={0}
-                              step={0.1}
-                              value={Math.round((selectedAudio.entry.item.fadeInSec ?? 0) * 100) / 100}
-                              isDisabled={exporting}
-                              hasNumberSteppers
-                              onChange={(value) => {
-                                updateAudioItem(selectedAudio.trackIndex, selectedAudio.entry.item.id, {
-                                  fadeInSec: value,
-                                });
-                              }}
-                            />
-                          </div>
-                          <div className="field">
-                            <NumberInput
-                              key={`${selectedAudio.entry.item.id}-fade-out`}
-                              id="audio-item-fade-out"
-                              label="Fade out (s)"
-                              min={0}
-                              step={0.1}
-                              value={Math.round((selectedAudio.entry.item.fadeOutSec ?? 0) * 100) / 100}
-                              isDisabled={exporting}
-                              hasNumberSteppers
-                              onChange={(value) => {
-                                updateAudioItem(selectedAudio.trackIndex, selectedAudio.entry.item.id, {
-                                  fadeOutSec: value,
-                                });
-                              }}
-                            />
-                          </div>
-                        </div>
-                        <div className="base-gain-row">
-                          <Text type="supporting">Clip gain</Text>
-                          <div className="base-gain-slider">
-                            <Slider
-                              data-testid="audio-clip-gain"
-                              label="Audio clip gain"
-                              isLabelHidden
-                              valueDisplay="none"
-                              min={0}
-                              max={2}
-                              step={0.05}
-                              value={selectedAudio.entry.item.gain ?? 1}
-                              isDisabled={exporting}
-                              onChange={(value: number) =>
-                                updateAudioItem(selectedAudio.trackIndex, selectedAudio.entry.item.id, { gain: value })
-                              }
-                            />
-                          </div>
-                          <Text type="supporting">{(selectedAudio.entry.item.gain ?? 1).toFixed(2)}×</Text>
-                        </div>
-                        <Text type="supporting">
-                          Drag the clip to move it, drag its edges to trim it, or drag it up or down to move it
-                          to another audio track. Preview volume is capped at 1×; export uses the full gain.
-                        </Text>
-                      </>
-                    )}
-                    {selectedTl && selectedTl.entry.item.kind === "text" && (
-                      <>
-                        <Text type="supporting">
-                          Selected text clip (V{selectedTl.trackIndex + 1}) · "
-                          {(selectedTl.entry.item.text ?? "").split("\n")[0] || "Text"}"
-                        </Text>
-                        <div className="field-row">
-                          <div className="field">
-                            <NumberInput
-                              key={`${selectedTl.entry.item.id}-duration`}
-                              id="tl-text-duration"
-                              label="Duration (s)"
-                              min={0.1}
-                              step={0.1}
-                              value={Math.round(selectedTl.entry.durationSec * 100) / 100}
-                              isDisabled={exporting}
-                              hasNumberSteppers
-                              onChange={(value) => {
-                                updateTlItem(selectedTl.trackIndex, selectedTl.entry.item.id, {
-                                  durationSec: Math.max(0.1, Math.round(value * 1000) / 1000),
-                                });
-                              }}
-                            />
-                          </div>
-                          <div className="field">
-                            <NumberInput
-                              key={`${selectedTl.entry.item.id}-fade-in`}
-                              id="tl-text-fade-in"
-                              label="Fade in (s)"
-                              min={0}
-                              step={0.1}
-                              value={Math.round((selectedTl.entry.item.fadeInSec ?? 0) * 100) / 100}
-                              isDisabled={exporting}
-                              hasNumberSteppers
-                              onChange={(value) => {
-                                updateTlItem(selectedTl.trackIndex, selectedTl.entry.item.id, { fadeInSec: value });
-                              }}
-                            />
-                          </div>
-                          <div className="field">
-                            <NumberInput
-                              key={`${selectedTl.entry.item.id}-fade-out`}
-                              id="tl-text-fade-out"
-                              label="Fade out (s)"
-                              min={0}
-                              step={0.1}
-                              value={Math.round((selectedTl.entry.item.fadeOutSec ?? 0) * 100) / 100}
-                              isDisabled={exporting}
-                              hasNumberSteppers
-                              onChange={(value) => {
-                                updateTlItem(selectedTl.trackIndex, selectedTl.entry.item.id, { fadeOutSec: value });
-                              }}
-                            />
-                          </div>
-                        </div>
-                        <HStack gap={3} vAlign="center">
-                          <Button
-                            label="Edit text"
-                            variant="secondary"
-                            onClick={() => {
-                              setCropClipId(null);
-                              setDrawerItemId(null);
-                              setDrawerTextItemId(selectedTl.entry.item.id);
-                            }}
-                            isDisabled={exporting}
-                          />
-                        </HStack>
-                        <Text type="supporting">
-                          The text is shown while the playhead is inside this clip. Drag the clip to move it in
-                          time, or drag its right edge to change its duration.
-                        </Text>
-                      </>
-                    )}
-                    {selectedTl && selectedTl.entry.clip?.kind === "image" && (
-                      <>
-                        <Text type="supporting">
-                          Selected clip: {selectedTl.entry.clip.file.name} (V{selectedTl.trackIndex + 1}
-                          {selectedTl.trackIndex === 0 ? " · Base" : ""}) · image
-                        </Text>
-                        <div className="field-row">
-                          <div className="field">
-                            <NumberInput
-                              key={`${selectedTl.entry.item.id}-duration`}
-                              id="tl-item-duration"
-                              label="Duration (s)"
-                              min={0.1}
-                              step={0.1}
-                              value={Math.round(selectedTl.entry.durationSec * 100) / 100}
-                              isDisabled={exporting}
-                              hasNumberSteppers
-                              onChange={(value) => {
-                                updateTlItem(selectedTl.trackIndex, selectedTl.entry.item.id, {
-                                  durationSec: Math.max(0.1, Math.round(value * 1000) / 1000),
-                                });
-                              }}
-                            />
-                          </div>
-                          <div className="field">
-                            <NumberInput
-                              key={`${selectedTl.entry.item.id}-fade-in`}
-                              id="tl-item-fade-in"
-                              label="Fade in (s)"
-                              min={0}
-                              step={0.1}
-                              value={Math.round((selectedTl.entry.item.fadeInSec ?? 0) * 100) / 100}
-                              isDisabled={exporting}
-                              hasNumberSteppers
-                              onChange={(value) => {
-                                updateTlItem(selectedTl.trackIndex, selectedTl.entry.item.id, { fadeInSec: value });
-                              }}
-                            />
-                          </div>
-                          <div className="field">
-                            <NumberInput
-                              key={`${selectedTl.entry.item.id}-fade-out`}
-                              id="tl-item-fade-out"
-                              label="Fade out (s)"
-                              min={0}
-                              step={0.1}
-                              value={Math.round((selectedTl.entry.item.fadeOutSec ?? 0) * 100) / 100}
-                              isDisabled={exporting}
-                              hasNumberSteppers
-                              onChange={(value) => {
-                                updateTlItem(selectedTl.trackIndex, selectedTl.entry.item.id, { fadeOutSec: value });
-                              }}
-                            />
-                          </div>
-                        </div>
-                        <Text type="supporting">
-                          The image is shown for this long. Drag the clip's right edge on the timeline to change
-                          it, or double-click the clip to edit its crop.
-                        </Text>
-                      </>
-                    )}
-                    {selectedTl && selectedTl.entry.clip?.kind === "video" && (
-                      <>
-                        <Text type="supporting">
-                          Selected clip: {selectedTl.entry.clip.file.name} (V{selectedTl.trackIndex + 1}
-                          {selectedTl.trackIndex === 0 ? " · Base" : ""}) · item trim (source)
-                        </Text>
-                        <div className="field-row">
-                          <div className="field">
-                            <NumberInput
-                              key={`${selectedTl.entry.item.id}-trim-start`}
-                              id="tl-item-trim-start"
-                              label="Start (s)"
-                              min={0}
-                              max={selectedTl.entry.clip.meta.durationSec}
-                              step={0.1}
-                              value={Math.round(selectedTl.entry.item.trim.startSec * 100) / 100}
-                              isDisabled={exporting}
-                              hasNumberSteppers
-                              onChange={(value) => {
-                                applyItemTrim(selectedTl.trackIndex, selectedTl.entry, {
-                                  ...selectedTl.entry.item.trim,
-                                  startSec: value,
-                                });
-                              }}
-                            />
-                          </div>
-                          <div className="field">
-                            <NumberInput
-                              key={`${selectedTl.entry.item.id}-trim-end`}
-                              id="tl-item-trim-end"
-                              label="End (s)"
-                              min={0}
-                              max={selectedTl.entry.clip.meta.durationSec}
-                              step={0.1}
-                              value={Math.round(selectedTl.entry.item.trim.endSec * 100) / 100}
-                              isDisabled={exporting}
-                              hasNumberSteppers
-                              onChange={(value) => {
-                                applyItemTrim(selectedTl.trackIndex, selectedTl.entry, {
-                                  ...selectedTl.entry.item.trim,
-                                  endSec: value,
-                                });
-                              }}
-                            />
-                          </div>
-                        </div>
-                        <div className="field-row">
-                          <div className="field">
-                            <NumberInput
-                              key={`${selectedTl.entry.item.id}-fade-in`}
-                              id="tl-item-fade-in"
-                              label="Fade in (s)"
-                              min={0}
-                              step={0.1}
-                              value={Math.round((selectedTl.entry.item.fadeInSec ?? 0) * 100) / 100}
-                              isDisabled={exporting}
-                              hasNumberSteppers
-                              onChange={(value) => {
-                                updateTlItem(selectedTl.trackIndex, selectedTl.entry.item.id, { fadeInSec: value });
-                              }}
-                            />
-                          </div>
-                          <div className="field">
-                            <NumberInput
-                              key={`${selectedTl.entry.item.id}-fade-out`}
-                              id="tl-item-fade-out"
-                              label="Fade out (s)"
-                              min={0}
-                              step={0.1}
-                              value={Math.round((selectedTl.entry.item.fadeOutSec ?? 0) * 100) / 100}
-                              isDisabled={exporting}
-                              hasNumberSteppers
-                              onChange={(value) => {
-                                updateTlItem(selectedTl.trackIndex, selectedTl.entry.item.id, { fadeOutSec: value });
-                              }}
-                            />
-                          </div>
-                        </div>
-                        <Text type="supporting">
-                          Item duration: {fmtSec(selectedTl.entry.durationSec)} · Trimming an overlay's head
-                          shifts it so the remaining content stays in place.
-                        </Text>
-                      </>
-                    )}
-                    {selectedTl && selectedTl.trackIndex > 0 && selectedTl.entry.item.rect && selectedTl.entry.clip && (
-                      <>
-                        <Text type="supporting">
-                          Selected overlay: {selectedTl.entry.clip.file.name} (V{selectedTl.trackIndex + 1})
-                        </Text>
-                        <div className="field-row">
-                          <div className="field">
-                            <NumberInput
-                              key={`${selectedTl.entry.item.id}-start`}
-                              id="tl-item-start"
-                              label="Start (s)"
-                              min={0}
-                              step={0.1}
-                              value={Math.round(selectedTl.entry.item.startSec * 10) / 10}
-                              isDisabled={exporting}
-                              hasNumberSteppers
-                              onChange={(value) => {
-                                updateTlItem(selectedTl.trackIndex, selectedTl.entry.item.id, {
-                                  startSec: Math.max(0, value),
-                                });
-                              }}
-                            />
-                          </div>
-                          {(["x", "y", "width", "height"] as const).map((field) => (
-                            <div className="field" key={field}>
-                              <NumberInput
-                                key={`${selectedTl.entry.item.id}-rect-${field}`}
-                                id={`tl-rect-${field}`}
-                                label={field === "width" ? "Width" : field === "height" ? "Height" : field.toUpperCase()}
-                                min={0}
-                                value={Math.round(selectedTl.entry.item.rect?.[field] ?? 0)}
-                                isDisabled={exporting}
-                                hasNumberSteppers
-                                isIntegerOnly
-                                onChange={(value) => {
-                                  const rect = selectedTl.entry.item.rect;
-                                  if (!rect) return;
-                                  const nextRect = { ...rect, [field]: value };
-                                  nextRect.width = Math.max(16, nextRect.width);
-                                  nextRect.height = Math.max(16, nextRect.height);
-                                  nextRect.x = Math.max(0, Math.min(nextRect.x, Math.max(0, timeline.outputWidth - 16)));
-                                  nextRect.y = Math.max(0, Math.min(nextRect.y, Math.max(0, timeline.outputHeight - 16)));
-                                  updateTlItem(selectedTl.trackIndex, selectedTl.entry.item.id, { rect: nextRect });
-                                }}
-                              />
-                            </div>
-                          ))}
-                        </div>
-                        {selectedTl.entry.clip.kind === "video" && selectedTl.entry.clip.meta.hasAudio && (
-                          <>
-                            <div className="field-row">
-                              <div className="field">
-                                <NumberInput
-                                  key={`${selectedTl.entry.item.id}-gain`}
-                                  id="overlay-item-gain"
-                                  label="Gain (0–2)"
-                                  min={0}
-                                  max={2}
-                                  step={0.05}
-                                  value={Math.round((selectedTl.entry.item.gain ?? 1) * 100) / 100}
-                                  isDisabled={exporting}
-                                  hasNumberSteppers
-                                  onChange={(value) => {
-                                    updateTlItem(selectedTl.trackIndex, selectedTl.entry.item.id, {
-                                      gain: Math.max(0, Math.min(2, value)),
-                                    });
-                                  }}
-                                />
-                              </div>
-                            </div>
-                            <div className="base-gain-row">
-                              <Text type="supporting">Clip gain</Text>
-                              <div className="base-gain-slider">
-                                <Slider
-                                  data-testid="overlay-clip-gain"
-                                  label="Overlay clip gain"
-                                  isLabelHidden
-                                  valueDisplay="none"
-                                  min={0}
-                                  max={2}
-                                  step={0.05}
-                                  value={selectedTl.entry.item.gain ?? 1}
-                                  isDisabled={exporting}
-                                  onChange={(value: number) =>
-                                    updateTlItem(selectedTl.trackIndex, selectedTl.entry.item.id, { gain: value })
-                                  }
-                                />
-                              </div>
-                              <Text type="supporting">{(selectedTl.entry.item.gain ?? 1).toFixed(2)}×</Text>
-                            </div>
-                            <Text type="supporting">
-                              This clip's audio plays in the preview and is mixed into timeline exports at this
-                              gain. Set it to 0 to keep the clip silent.
-                            </Text>
-                          </>
-                        )}
-                        {(selectedTl.entry.clip.kind === "video" || selectedTl.entry.clip.kind === "image") && (
-                          <>
-                            <HStack gap={3} vAlign="center">
-                              <Switch
-                                label="Chroma key"
-                                value={selectedChromaKey.enabled}
-                                onChange={(checked) => updateSelectedChromaKey({ enabled: checked })}
-                              />
-                              <input
-                                id="chroma-color"
-                                type="color"
-                                aria-label="Chroma key color"
-                                value={selectedChromaKey.color}
-                                disabled={exporting}
-                                onChange={(e) => updateSelectedChromaKey({ color: e.target.value })}
-                              />
-                            </HStack>
-                            {selectedChromaKey.enabled && (
-                              <>
-                                <div className="field-row">
-                                  <div className="field">
-                                    <NumberInput
-                                      key={`${selectedTl.entry.item.id}-chroma-tolerance`}
-                                      id="chroma-tolerance"
-                                      label="Tolerance (0–1)"
-                                      min={0}
-                                      max={1}
-                                      step={0.05}
-                                      value={Math.round(selectedChromaKey.tolerance * 100) / 100}
-                                      isDisabled={exporting}
-                                      hasNumberSteppers
-                                      onChange={(value) => {
-                                        updateSelectedChromaKey({
-                                          tolerance: Math.max(0, Math.min(1, value)),
-                                        });
-                                      }}
-                                    />
-                                  </div>
-                                  <div className="field">
-                                    <NumberInput
-                                      key={`${selectedTl.entry.item.id}-chroma-softness`}
-                                      id="chroma-softness"
-                                      label="Softness (0–1)"
-                                      min={0}
-                                      max={1}
-                                      step={0.05}
-                                      value={Math.round(selectedChromaKey.softness * 100) / 100}
-                                      isDisabled={exporting}
-                                      hasNumberSteppers
-                                      onChange={(value) => {
-                                        updateSelectedChromaKey({
-                                          softness: Math.max(0, Math.min(1, value)),
-                                        });
-                                      }}
-                                    />
-                                  </div>
-                                </div>
-                                <div className="base-gain-row">
-                                  <Text type="supporting">Tolerance</Text>
-                                  <div className="base-gain-slider">
-                                    <Slider
-                                      data-testid="chroma-tolerance-slider"
-                                      label="Chroma key tolerance"
-                                      isLabelHidden
-                                      valueDisplay="none"
-                                      min={0}
-                                      max={1}
-                                      step={0.01}
-                                      value={selectedChromaKey.tolerance}
-                                      isDisabled={exporting}
-                                      onChange={(value: number) => updateSelectedChromaKey({ tolerance: value })}
-                                    />
-                                  </div>
-                                  <Text type="supporting">{selectedChromaKey.tolerance.toFixed(2)}</Text>
-                                </div>
-                                <div className="base-gain-row">
-                                  <Text type="supporting">Softness</Text>
-                                  <div className="base-gain-slider">
-                                    <Slider
-                                      data-testid="chroma-softness-slider"
-                                      label="Chroma key softness"
-                                      isLabelHidden
-                                      valueDisplay="none"
-                                      min={0}
-                                      max={1}
-                                      step={0.01}
-                                      value={selectedChromaKey.softness}
-                                      isDisabled={exporting}
-                                      onChange={(value: number) => updateSelectedChromaKey({ softness: value })}
-                                    />
-                                  </div>
-                                  <Text type="supporting">{selectedChromaKey.softness.toFixed(2)}</Text>
-                                </div>
-                                <Text type="supporting">
-                                  Parts of this clip close to the key color become transparent, so the tracks
-                                  below show through. Tolerance sets how close a color must be; softness feathers
-                                  the edge.
-                                </Text>
-                              </>
-                            )}
-                          </>
-                        )}
-                        <HStack gap={3} vAlign="center">
-                          <Button
-                            label="Picture in picture"
-                            variant="secondary"
-                            onClick={() => {
-                              const selClip = selectedTl.entry.clip;
-                              if (!selClip) return;
-                              updateTlItem(selectedTl.trackIndex, selectedTl.entry.item.id, {
-                                rect: pipItemRect(timeline.outputWidth, timeline.outputHeight, itemCropAspect(selectedTl.entry.item, selClip)),
-                              });
-                            }}
-                            isDisabled={exporting}
-                          />
-                        </HStack>
-                        <Text type="supporting">
-                          Drag the selected overlay on the preview to move it, and use the corner handle to resize
-                          it. Its size follows the item's crop aspect while dragging on the preview.
-                        </Text>
-                      </>
-                    )}
                   </>
                 )}
                 {clip && !tlHasItems && clip.kind === "image" && (
@@ -4127,11 +3552,11 @@ export default function App() {
         </main>
       </div>
       <Drawer
-        isOpen={cropClip !== null || drawerTextItem !== null}
+        isOpen={cropClip !== null || drawerTextItem !== null || drawerAudio !== null}
         onOpenChange={(open) => {
           if (!open) closeDrawer();
         }}
-        label={cropClip ? `Edit ${cropClip.file.name}` : drawerTextItem ? "Edit text clip" : "Edit clip"}
+        label={cropClip ? `Edit ${cropClip.file.name}` : drawerTextItem ? "Edit text clip" : drawerAudio ? "Edit audio clip" : "Edit clip"}
         side="end"
         width={520}
         data-testid="crop-drawer"
@@ -4281,6 +3706,262 @@ export default function App() {
             </Text>
               </>
             )}
+            {drawerTl && (
+              <>
+                <Text type="supporting">Fades — timeline item (V{drawerTl.trackIndex + 1})</Text>
+                <div className="field-row">
+                  <div className="field">
+                    <NumberInput
+                      key={`${drawerTl.entry.item.id}-fade-in`}
+                      id="tl-item-fade-in"
+                      label="Fade in (s)"
+                      min={0}
+                      step={0.1}
+                      value={Math.round((drawerTl.entry.item.fadeInSec ?? 0) * 100) / 100}
+                      isDisabled={exporting}
+                      hasNumberSteppers
+                      onChange={(value) => {
+                        updateTlItem(drawerTl.trackIndex, drawerTl.entry.item.id, { fadeInSec: value });
+                      }}
+                    />
+                  </div>
+                  <div className="field">
+                    <NumberInput
+                      key={`${drawerTl.entry.item.id}-fade-out`}
+                      id="tl-item-fade-out"
+                      label="Fade out (s)"
+                      min={0}
+                      step={0.1}
+                      value={Math.round((drawerTl.entry.item.fadeOutSec ?? 0) * 100) / 100}
+                      isDisabled={exporting}
+                      hasNumberSteppers
+                      onChange={(value) => {
+                        updateTlItem(drawerTl.trackIndex, drawerTl.entry.item.id, { fadeOutSec: value });
+                      }}
+                    />
+                  </div>
+                </div>
+                <Text type="supporting">Item duration: {fmtSec(drawerTl.entry.durationSec)}</Text>
+              </>
+            )}
+            {drawerTl && drawerTl.trackIndex > 0 && drawerTl.entry.item.rect && drawerTl.entry.clip && (
+              <>
+                <Text type="supporting">
+                  Position & size — timeline item (V{drawerTl.trackIndex + 1})
+                </Text>
+                <div className="field-row">
+                  <div className="field">
+                    <NumberInput
+                      key={`${drawerTl.entry.item.id}-start`}
+                      id="tl-item-start"
+                      label="Start (s)"
+                      min={0}
+                      step={0.1}
+                      value={Math.round(drawerTl.entry.item.startSec * 10) / 10}
+                      isDisabled={exporting}
+                      hasNumberSteppers
+                      onChange={(value) => {
+                        updateTlItem(drawerTl.trackIndex, drawerTl.entry.item.id, {
+                          startSec: Math.max(0, value),
+                        });
+                      }}
+                    />
+                  </div>
+                  {(["x", "y", "width", "height"] as const).map((field) => (
+                    <div className="field" key={field}>
+                      <NumberInput
+                        key={`${drawerTl.entry.item.id}-rect-${field}`}
+                        id={`tl-rect-${field}`}
+                        label={field === "width" ? "Width" : field === "height" ? "Height" : field.toUpperCase()}
+                        min={0}
+                        value={Math.round(drawerTl.entry.item.rect?.[field] ?? 0)}
+                        isDisabled={exporting}
+                        hasNumberSteppers
+                        isIntegerOnly
+                        onChange={(value) => {
+                          const rect = drawerTl.entry.item.rect;
+                          if (!rect) return;
+                          const nextRect = { ...rect, [field]: value };
+                          nextRect.width = Math.max(16, nextRect.width);
+                          nextRect.height = Math.max(16, nextRect.height);
+                          nextRect.x = Math.max(0, Math.min(nextRect.x, Math.max(0, timeline.outputWidth - 16)));
+                          nextRect.y = Math.max(0, Math.min(nextRect.y, Math.max(0, timeline.outputHeight - 16)));
+                          updateTlItem(drawerTl.trackIndex, drawerTl.entry.item.id, { rect: nextRect });
+                        }}
+                      />
+                    </div>
+                  ))}
+                </div>
+                {drawerTl.entry.clip.kind === "video" && drawerTl.entry.clip.meta.hasAudio && (
+                  <>
+                    <div className="field-row">
+                      <div className="field">
+                        <NumberInput
+                          key={`${drawerTl.entry.item.id}-gain`}
+                          id="overlay-item-gain"
+                          label="Gain (0–2)"
+                          min={0}
+                          max={2}
+                          step={0.05}
+                          value={Math.round((drawerTl.entry.item.gain ?? 1) * 100) / 100}
+                          isDisabled={exporting}
+                          hasNumberSteppers
+                          onChange={(value) => {
+                            updateTlItem(drawerTl.trackIndex, drawerTl.entry.item.id, {
+                              gain: Math.max(0, Math.min(2, value)),
+                            });
+                          }}
+                        />
+                      </div>
+                    </div>
+                    <div className="base-gain-row">
+                      <Text type="supporting">Clip gain</Text>
+                      <div className="base-gain-slider">
+                        <Slider
+                          data-testid="overlay-clip-gain"
+                          label="Overlay clip gain"
+                          isLabelHidden
+                          valueDisplay="none"
+                          min={0}
+                          max={2}
+                          step={0.05}
+                          value={drawerTl.entry.item.gain ?? 1}
+                          isDisabled={exporting}
+                          onChange={(value: number) =>
+                            updateTlItem(drawerTl.trackIndex, drawerTl.entry.item.id, { gain: value })
+                          }
+                        />
+                      </div>
+                      <Text type="supporting">{(drawerTl.entry.item.gain ?? 1).toFixed(2)}×</Text>
+                    </div>
+                    <Text type="supporting">
+                      This clip's audio plays in the preview and is mixed into timeline exports at this
+                      gain. Set it to 0 to keep the clip silent.
+                    </Text>
+                  </>
+                )}
+                {(drawerTl.entry.clip.kind === "video" || drawerTl.entry.clip.kind === "image") && (
+                  <>
+                    <HStack gap={3} vAlign="center">
+                      <Switch
+                        label="Chroma key"
+                        value={drawerChromaKey.enabled}
+                        onChange={(checked) => updateDrawerChromaKey({ enabled: checked })}
+                      />
+                      <input
+                        id="chroma-color"
+                        type="color"
+                        aria-label="Chroma key color"
+                        value={drawerChromaKey.color}
+                        disabled={exporting}
+                        onChange={(e) => updateDrawerChromaKey({ color: e.target.value })}
+                      />
+                    </HStack>
+                    {drawerChromaKey.enabled && (
+                      <>
+                        <div className="field-row">
+                          <div className="field">
+                            <NumberInput
+                              key={`${drawerTl.entry.item.id}-chroma-tolerance`}
+                              id="chroma-tolerance"
+                              label="Tolerance (0–1)"
+                              min={0}
+                              max={1}
+                              step={0.05}
+                              value={Math.round(drawerChromaKey.tolerance * 100) / 100}
+                              isDisabled={exporting}
+                              hasNumberSteppers
+                              onChange={(value) => {
+                                updateDrawerChromaKey({
+                                  tolerance: Math.max(0, Math.min(1, value)),
+                                });
+                              }}
+                            />
+                          </div>
+                          <div className="field">
+                            <NumberInput
+                              key={`${drawerTl.entry.item.id}-chroma-softness`}
+                              id="chroma-softness"
+                              label="Softness (0–1)"
+                              min={0}
+                              max={1}
+                              step={0.05}
+                              value={Math.round(drawerChromaKey.softness * 100) / 100}
+                              isDisabled={exporting}
+                              hasNumberSteppers
+                              onChange={(value) => {
+                                updateDrawerChromaKey({
+                                  softness: Math.max(0, Math.min(1, value)),
+                                });
+                              }}
+                            />
+                          </div>
+                        </div>
+                        <div className="base-gain-row">
+                          <Text type="supporting">Tolerance</Text>
+                          <div className="base-gain-slider">
+                            <Slider
+                              data-testid="chroma-tolerance-slider"
+                              label="Chroma key tolerance"
+                              isLabelHidden
+                              valueDisplay="none"
+                              min={0}
+                              max={1}
+                              step={0.01}
+                              value={drawerChromaKey.tolerance}
+                              isDisabled={exporting}
+                              onChange={(value: number) => updateDrawerChromaKey({ tolerance: value })}
+                            />
+                          </div>
+                          <Text type="supporting">{drawerChromaKey.tolerance.toFixed(2)}</Text>
+                        </div>
+                        <div className="base-gain-row">
+                          <Text type="supporting">Softness</Text>
+                          <div className="base-gain-slider">
+                            <Slider
+                              data-testid="chroma-softness-slider"
+                              label="Chroma key softness"
+                              isLabelHidden
+                              valueDisplay="none"
+                              min={0}
+                              max={1}
+                              step={0.01}
+                              value={drawerChromaKey.softness}
+                              isDisabled={exporting}
+                              onChange={(value: number) => updateDrawerChromaKey({ softness: value })}
+                            />
+                          </div>
+                          <Text type="supporting">{drawerChromaKey.softness.toFixed(2)}</Text>
+                        </div>
+                        <Text type="supporting">
+                          Parts of this clip close to the key color become transparent, so the tracks
+                          below show through. Tolerance sets how close a color must be; softness feathers
+                          the edge.
+                        </Text>
+                      </>
+                    )}
+                  </>
+                )}
+                <HStack gap={3} vAlign="center">
+                  <Button
+                    label="Picture in picture"
+                    variant="secondary"
+                    onClick={() => {
+                      const selClip = drawerTl.entry.clip;
+                      if (!selClip) return;
+                      updateTlItem(drawerTl.trackIndex, drawerTl.entry.item.id, {
+                        rect: pipItemRect(timeline.outputWidth, timeline.outputHeight, itemCropAspect(drawerTl.entry.item, selClip)),
+                      });
+                    }}
+                    isDisabled={exporting}
+                  />
+                </HStack>
+                <Text type="supporting">
+                  Drag the selected overlay on the preview to move it, and use the corner handle to resize
+                  it. Its size follows the item's crop aspect while dragging on the preview.
+                </Text>
+              </>
+            )}
           </VStack>
         )}
         {drawerTextItem && (
@@ -4356,9 +4037,189 @@ export default function App() {
               <SegmentedControlItem value="center" label="Center" />
               <SegmentedControlItem value="bottom" label="Bottom" />
             </SegmentedControl>
+            <Text type="supporting">Fades — timeline item (V{drawerTextItem.trackIndex + 1})</Text>
+            <div className="field-row">
+              <div className="field">
+                <NumberInput
+                  key={`${drawerTextItem.item.id}-fade-in`}
+                  id="tl-text-fade-in"
+                  label="Fade in (s)"
+                  min={0}
+                  step={0.1}
+                  value={Math.round((drawerTextItem.item.fadeInSec ?? 0) * 100) / 100}
+                  isDisabled={exporting}
+                  hasNumberSteppers
+                  onChange={(value) => {
+                    updateTlItem(drawerTextItem.trackIndex, drawerTextItem.item.id, { fadeInSec: value });
+                  }}
+                />
+              </div>
+              <div className="field">
+                <NumberInput
+                  key={`${drawerTextItem.item.id}-fade-out`}
+                  id="tl-text-fade-out"
+                  label="Fade out (s)"
+                  min={0}
+                  step={0.1}
+                  value={Math.round((drawerTextItem.item.fadeOutSec ?? 0) * 100) / 100}
+                  isDisabled={exporting}
+                  hasNumberSteppers
+                  onChange={(value) => {
+                    updateTlItem(drawerTextItem.trackIndex, drawerTextItem.item.id, { fadeOutSec: value });
+                  }}
+                />
+              </div>
+            </div>
             <Text type="supporting">
               The text is drawn over the timeline while the playhead is inside this clip. Font size is relative
               to the output height.
+            </Text>
+          </VStack>
+        )}
+        {drawerAudio && drawerAudio.entry.clip && (
+          <VStack gap={4}>
+            <DrawerHeader
+              title={drawerAudio.entry.clip.file.name}
+              subtitle={`Timeline item (A${drawerAudio.trackIndex + 1})`}
+              onOpenChange={(open) => {
+                if (!open) closeDrawer();
+              }}
+            />
+            <Text type="supporting">
+              Start, trim & gain — timeline item (A{drawerAudio.trackIndex + 1}) · Waveform trims with the clip
+            </Text>
+            <div className="field-row">
+              <div className="field">
+                <NumberInput
+                  key={`${drawerAudio.entry.item.id}-start`}
+                  id="audio-item-start"
+                  label="Start (s)"
+                  min={0}
+                  step={0.1}
+                  value={Math.round(drawerAudio.entry.startSec * 100) / 100}
+                  isDisabled={exporting}
+                  hasNumberSteppers
+                  onChange={(value) => {
+                    updateAudioItem(drawerAudio.trackIndex, drawerAudio.entry.item.id, {
+                      startSec: Math.max(0, Math.round(value * 1000) / 1000),
+                    });
+                  }}
+                />
+              </div>
+              <div className="field">
+                <NumberInput
+                  key={`${drawerAudio.entry.item.id}-trim-start`}
+                  id="audio-item-trim-start"
+                  label="Trim in (s)"
+                  min={0}
+                  max={drawerAudio.entry.clip.meta.durationSec}
+                  step={0.1}
+                  value={Math.round(drawerAudio.entry.item.trim.startSec * 100) / 100}
+                  isDisabled={exporting}
+                  hasNumberSteppers
+                  onChange={(value) => {
+                    applyAudioItemTrim(drawerAudio.trackIndex, drawerAudio.entry, {
+                      ...drawerAudio.entry.item.trim,
+                      startSec: value,
+                    });
+                  }}
+                />
+              </div>
+              <div className="field">
+                <NumberInput
+                  key={`${drawerAudio.entry.item.id}-trim-end`}
+                  id="audio-item-trim-end"
+                  label="Trim out (s)"
+                  min={0}
+                  max={drawerAudio.entry.clip.meta.durationSec}
+                  step={0.1}
+                  value={Math.round(drawerAudio.entry.item.trim.endSec * 100) / 100}
+                  isDisabled={exporting}
+                  hasNumberSteppers
+                  onChange={(value) => {
+                    applyAudioItemTrim(drawerAudio.trackIndex, drawerAudio.entry, {
+                      ...drawerAudio.entry.item.trim,
+                      endSec: value,
+                    });
+                  }}
+                />
+              </div>
+              <div className="field">
+                <NumberInput
+                  key={`${drawerAudio.entry.item.id}-gain`}
+                  id="audio-item-gain"
+                  label="Gain (0–2)"
+                  min={0}
+                  max={2}
+                  step={0.05}
+                  value={Math.round((drawerAudio.entry.item.gain ?? 1) * 100) / 100}
+                  isDisabled={exporting}
+                  hasNumberSteppers
+                  onChange={(value) => {
+                    updateAudioItem(drawerAudio.trackIndex, drawerAudio.entry.item.id, {
+                      gain: Math.max(0, Math.min(2, value)),
+                    });
+                  }}
+                />
+              </div>
+              <div className="field">
+                <NumberInput
+                  key={`${drawerAudio.entry.item.id}-fade-in`}
+                  id="audio-item-fade-in"
+                  label="Fade in (s)"
+                  min={0}
+                  step={0.1}
+                  value={Math.round((drawerAudio.entry.item.fadeInSec ?? 0) * 100) / 100}
+                  isDisabled={exporting}
+                  hasNumberSteppers
+                  onChange={(value) => {
+                    updateAudioItem(drawerAudio.trackIndex, drawerAudio.entry.item.id, {
+                      fadeInSec: value,
+                    });
+                  }}
+                />
+              </div>
+              <div className="field">
+                <NumberInput
+                  key={`${drawerAudio.entry.item.id}-fade-out`}
+                  id="audio-item-fade-out"
+                  label="Fade out (s)"
+                  min={0}
+                  step={0.1}
+                  value={Math.round((drawerAudio.entry.item.fadeOutSec ?? 0) * 100) / 100}
+                  isDisabled={exporting}
+                  hasNumberSteppers
+                  onChange={(value) => {
+                    updateAudioItem(drawerAudio.trackIndex, drawerAudio.entry.item.id, {
+                      fadeOutSec: value,
+                    });
+                  }}
+                />
+              </div>
+            </div>
+            <div className="base-gain-row">
+              <Text type="supporting">Clip gain</Text>
+              <div className="base-gain-slider">
+                <Slider
+                  data-testid="audio-clip-gain"
+                  label="Audio clip gain"
+                  isLabelHidden
+                  valueDisplay="none"
+                  min={0}
+                  max={2}
+                  step={0.05}
+                  value={drawerAudio.entry.item.gain ?? 1}
+                  isDisabled={exporting}
+                  onChange={(value: number) =>
+                    updateAudioItem(drawerAudio.trackIndex, drawerAudio.entry.item.id, { gain: value })
+                  }
+                />
+              </div>
+              <Text type="supporting">{(drawerAudio.entry.item.gain ?? 1).toFixed(2)}×</Text>
+            </div>
+            <Text type="supporting">
+              Drag the clip to move it, drag its edges to trim it, or drag it up or down to move it
+              to another audio track. Preview volume is capped at 1×; export uses the full gain.
             </Text>
           </VStack>
         )}
