@@ -485,11 +485,6 @@ body {
   box-sizing: border-box;
 }
 
-.field > input:disabled {
-  opacity: 0.45;
-  cursor: not-allowed;
-}
-
 .meta-row {
   display: flex;
   flex-wrap: wrap;

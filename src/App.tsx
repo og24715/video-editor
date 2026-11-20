@@ -1815,9 +1815,8 @@ export default function App() {
     applyDrawerCrop({ x, y, width, height });
   };
 
-  const updateField = (field: keyof CropRect, raw: string) => {
+  const updateField = (field: keyof CropRect, value: number) => {
     if (!cropClip) return;
-    const value = Number(raw);
     if (!Number.isFinite(value)) return;
     applyDrawerCrop(clampCrop({ ...(drawerItemCrop ?? cropClip.crop), [field]: value }, cropClip.meta.width, cropClip.meta.height, ratio));
   };
@@ -2133,8 +2132,7 @@ export default function App() {
       startSec: Math.max(0, Math.round((drawerItem.item.startSec + delta) * 1000) / 1000),
     });
   };
-  const updateDrawerTrimField = (field: keyof TrimRange, raw: string) => {
-    const value = Number(raw);
+  const updateDrawerTrimField = (field: keyof TrimRange, value: number) => {
     if (!Number.isFinite(value)) return;
     applyDrawerTrim({ ...drawerTrim, [field]: value });
   };
@@ -3382,6 +3380,7 @@ export default function App() {
                           step={2}
                           value={timeline.outputWidth > 0 ? timeline.outputWidth : null}
                           isDisabled={exporting}
+                          hasNumberSteppers
                           onChange={(value) => {
                             if (timeline.outputHeight > 0) applyTlOutputSize(value, timeline.outputHeight);
                           }}
@@ -3396,6 +3395,7 @@ export default function App() {
                           step={2}
                           value={timeline.outputHeight > 0 ? timeline.outputHeight : null}
                           isDisabled={exporting}
+                          hasNumberSteppers
                           onChange={(value) => {
                             if (timeline.outputWidth > 0) applyTlOutputSize(timeline.outputWidth, value);
                           }}
@@ -3525,121 +3525,109 @@ export default function App() {
                         </Text>
                         <div className="field-row">
                           <div className="field">
-                            <label htmlFor="audio-item-start">Start (s)</label>
-                            <input
+                            <NumberInput
+                              key={`${selectedAudio.entry.item.id}-start`}
                               id="audio-item-start"
-                              type="number"
+                              label="Start (s)"
                               min={0}
                               step={0.1}
                               value={Math.round(selectedAudio.entry.startSec * 100) / 100}
-                              disabled={exporting}
-                              onChange={(e) => {
-                                const value = Number(e.target.value);
-                                if (Number.isFinite(value)) {
-                                  updateAudioItem(selectedAudio.trackIndex, selectedAudio.entry.item.id, {
-                                    startSec: Math.max(0, Math.round(value * 1000) / 1000),
-                                  });
-                                }
+                              isDisabled={exporting}
+                              hasNumberSteppers
+                              onChange={(value) => {
+                                updateAudioItem(selectedAudio.trackIndex, selectedAudio.entry.item.id, {
+                                  startSec: Math.max(0, Math.round(value * 1000) / 1000),
+                                });
                               }}
                             />
                           </div>
                           <div className="field">
-                            <label htmlFor="audio-item-trim-start">Trim in (s)</label>
-                            <input
+                            <NumberInput
+                              key={`${selectedAudio.entry.item.id}-trim-start`}
                               id="audio-item-trim-start"
-                              type="number"
+                              label="Trim in (s)"
                               min={0}
                               max={selectedAudio.entry.clip.meta.durationSec}
                               step={0.1}
                               value={Math.round(selectedAudio.entry.item.trim.startSec * 100) / 100}
-                              disabled={exporting}
-                              onChange={(e) => {
-                                const value = Number(e.target.value);
-                                if (Number.isFinite(value)) {
-                                  applyAudioItemTrim(selectedAudio.trackIndex, selectedAudio.entry, {
-                                    ...selectedAudio.entry.item.trim,
-                                    startSec: value,
-                                  });
-                                }
+                              isDisabled={exporting}
+                              hasNumberSteppers
+                              onChange={(value) => {
+                                applyAudioItemTrim(selectedAudio.trackIndex, selectedAudio.entry, {
+                                  ...selectedAudio.entry.item.trim,
+                                  startSec: value,
+                                });
                               }}
                             />
                           </div>
                           <div className="field">
-                            <label htmlFor="audio-item-trim-end">Trim out (s)</label>
-                            <input
+                            <NumberInput
+                              key={`${selectedAudio.entry.item.id}-trim-end`}
                               id="audio-item-trim-end"
-                              type="number"
+                              label="Trim out (s)"
                               min={0}
                               max={selectedAudio.entry.clip.meta.durationSec}
                               step={0.1}
                               value={Math.round(selectedAudio.entry.item.trim.endSec * 100) / 100}
-                              disabled={exporting}
-                              onChange={(e) => {
-                                const value = Number(e.target.value);
-                                if (Number.isFinite(value)) {
-                                  applyAudioItemTrim(selectedAudio.trackIndex, selectedAudio.entry, {
-                                    ...selectedAudio.entry.item.trim,
-                                    endSec: value,
-                                  });
-                                }
+                              isDisabled={exporting}
+                              hasNumberSteppers
+                              onChange={(value) => {
+                                applyAudioItemTrim(selectedAudio.trackIndex, selectedAudio.entry, {
+                                  ...selectedAudio.entry.item.trim,
+                                  endSec: value,
+                                });
                               }}
                             />
                           </div>
                           <div className="field">
-                            <label htmlFor="audio-item-gain">Gain (0–2)</label>
-                            <input
+                            <NumberInput
+                              key={`${selectedAudio.entry.item.id}-gain`}
                               id="audio-item-gain"
-                              type="number"
+                              label="Gain (0–2)"
                               min={0}
                               max={2}
                               step={0.05}
                               value={Math.round((selectedAudio.entry.item.gain ?? 1) * 100) / 100}
-                              disabled={exporting}
-                              onChange={(e) => {
-                                const value = Number(e.target.value);
-                                if (Number.isFinite(value)) {
-                                  updateAudioItem(selectedAudio.trackIndex, selectedAudio.entry.item.id, {
-                                    gain: Math.max(0, Math.min(2, value)),
-                                  });
-                                }
+                              isDisabled={exporting}
+                              hasNumberSteppers
+                              onChange={(value) => {
+                                updateAudioItem(selectedAudio.trackIndex, selectedAudio.entry.item.id, {
+                                  gain: Math.max(0, Math.min(2, value)),
+                                });
                               }}
                             />
                           </div>
                           <div className="field">
-                            <label htmlFor="audio-item-fade-in">Fade in (s)</label>
-                            <input
+                            <NumberInput
+                              key={`${selectedAudio.entry.item.id}-fade-in`}
                               id="audio-item-fade-in"
-                              type="number"
+                              label="Fade in (s)"
                               min={0}
                               step={0.1}
                               value={Math.round((selectedAudio.entry.item.fadeInSec ?? 0) * 100) / 100}
-                              disabled={exporting}
-                              onChange={(e) => {
-                                const value = Number(e.target.value);
-                                if (Number.isFinite(value)) {
-                                  updateAudioItem(selectedAudio.trackIndex, selectedAudio.entry.item.id, {
-                                    fadeInSec: value,
-                                  });
-                                }
+                              isDisabled={exporting}
+                              hasNumberSteppers
+                              onChange={(value) => {
+                                updateAudioItem(selectedAudio.trackIndex, selectedAudio.entry.item.id, {
+                                  fadeInSec: value,
+                                });
                               }}
                             />
                           </div>
                           <div className="field">
-                            <label htmlFor="audio-item-fade-out">Fade out (s)</label>
-                            <input
+                            <NumberInput
+                              key={`${selectedAudio.entry.item.id}-fade-out`}
                               id="audio-item-fade-out"
-                              type="number"
+                              label="Fade out (s)"
                               min={0}
                               step={0.1}
                               value={Math.round((selectedAudio.entry.item.fadeOutSec ?? 0) * 100) / 100}
-                              disabled={exporting}
-                              onChange={(e) => {
-                                const value = Number(e.target.value);
-                                if (Number.isFinite(value)) {
-                                  updateAudioItem(selectedAudio.trackIndex, selectedAudio.entry.item.id, {
-                                    fadeOutSec: value,
-                                  });
-                                }
+                              isDisabled={exporting}
+                              hasNumberSteppers
+                              onChange={(value) => {
+                                updateAudioItem(selectedAudio.trackIndex, selectedAudio.entry.item.id, {
+                                  fadeOutSec: value,
+                                });
                               }}
                             />
                           </div>
@@ -3678,55 +3666,49 @@ export default function App() {
                         </Text>
                         <div className="field-row">
                           <div className="field">
-                            <label htmlFor="tl-text-duration">Duration (s)</label>
-                            <input
+                            <NumberInput
+                              key={`${selectedTl.entry.item.id}-duration`}
                               id="tl-text-duration"
-                              type="number"
+                              label="Duration (s)"
                               min={0.1}
                               step={0.1}
                               value={Math.round(selectedTl.entry.durationSec * 100) / 100}
-                              disabled={exporting}
-                              onChange={(e) => {
-                                const value = Number(e.target.value);
-                                if (Number.isFinite(value)) {
-                                  updateTlItem(selectedTl.trackIndex, selectedTl.entry.item.id, {
-                                    durationSec: Math.max(0.1, Math.round(value * 1000) / 1000),
-                                  });
-                                }
+                              isDisabled={exporting}
+                              hasNumberSteppers
+                              onChange={(value) => {
+                                updateTlItem(selectedTl.trackIndex, selectedTl.entry.item.id, {
+                                  durationSec: Math.max(0.1, Math.round(value * 1000) / 1000),
+                                });
                               }}
                             />
                           </div>
                           <div className="field">
-                            <label htmlFor="tl-text-fade-in">Fade in (s)</label>
-                            <input
+                            <NumberInput
+                              key={`${selectedTl.entry.item.id}-fade-in`}
                               id="tl-text-fade-in"
-                              type="number"
+                              label="Fade in (s)"
                               min={0}
                               step={0.1}
                               value={Math.round((selectedTl.entry.item.fadeInSec ?? 0) * 100) / 100}
-                              disabled={exporting}
-                              onChange={(e) => {
-                                const value = Number(e.target.value);
-                                if (Number.isFinite(value)) {
-                                  updateTlItem(selectedTl.trackIndex, selectedTl.entry.item.id, { fadeInSec: value });
-                                }
+                              isDisabled={exporting}
+                              hasNumberSteppers
+                              onChange={(value) => {
+                                updateTlItem(selectedTl.trackIndex, selectedTl.entry.item.id, { fadeInSec: value });
                               }}
                             />
                           </div>
                           <div className="field">
-                            <label htmlFor="tl-text-fade-out">Fade out (s)</label>
-                            <input
+                            <NumberInput
+                              key={`${selectedTl.entry.item.id}-fade-out`}
                               id="tl-text-fade-out"
-                              type="number"
+                              label="Fade out (s)"
                               min={0}
                               step={0.1}
                               value={Math.round((selectedTl.entry.item.fadeOutSec ?? 0) * 100) / 100}
-                              disabled={exporting}
-                              onChange={(e) => {
-                                const value = Number(e.target.value);
-                                if (Number.isFinite(value)) {
-                                  updateTlItem(selectedTl.trackIndex, selectedTl.entry.item.id, { fadeOutSec: value });
-                                }
+                              isDisabled={exporting}
+                              hasNumberSteppers
+                              onChange={(value) => {
+                                updateTlItem(selectedTl.trackIndex, selectedTl.entry.item.id, { fadeOutSec: value });
                               }}
                             />
                           </div>
@@ -3757,55 +3739,49 @@ export default function App() {
                         </Text>
                         <div className="field-row">
                           <div className="field">
-                            <label htmlFor="tl-item-duration">Duration (s)</label>
-                            <input
+                            <NumberInput
+                              key={`${selectedTl.entry.item.id}-duration`}
                               id="tl-item-duration"
-                              type="number"
+                              label="Duration (s)"
                               min={0.1}
                               step={0.1}
                               value={Math.round(selectedTl.entry.durationSec * 100) / 100}
-                              disabled={exporting}
-                              onChange={(e) => {
-                                const value = Number(e.target.value);
-                                if (Number.isFinite(value)) {
-                                  updateTlItem(selectedTl.trackIndex, selectedTl.entry.item.id, {
-                                    durationSec: Math.max(0.1, Math.round(value * 1000) / 1000),
-                                  });
-                                }
+                              isDisabled={exporting}
+                              hasNumberSteppers
+                              onChange={(value) => {
+                                updateTlItem(selectedTl.trackIndex, selectedTl.entry.item.id, {
+                                  durationSec: Math.max(0.1, Math.round(value * 1000) / 1000),
+                                });
                               }}
                             />
                           </div>
                           <div className="field">
-                            <label htmlFor="tl-item-fade-in">Fade in (s)</label>
-                            <input
+                            <NumberInput
+                              key={`${selectedTl.entry.item.id}-fade-in`}
                               id="tl-item-fade-in"
-                              type="number"
+                              label="Fade in (s)"
                               min={0}
                               step={0.1}
                               value={Math.round((selectedTl.entry.item.fadeInSec ?? 0) * 100) / 100}
-                              disabled={exporting}
-                              onChange={(e) => {
-                                const value = Number(e.target.value);
-                                if (Number.isFinite(value)) {
-                                  updateTlItem(selectedTl.trackIndex, selectedTl.entry.item.id, { fadeInSec: value });
-                                }
+                              isDisabled={exporting}
+                              hasNumberSteppers
+                              onChange={(value) => {
+                                updateTlItem(selectedTl.trackIndex, selectedTl.entry.item.id, { fadeInSec: value });
                               }}
                             />
                           </div>
                           <div className="field">
-                            <label htmlFor="tl-item-fade-out">Fade out (s)</label>
-                            <input
+                            <NumberInput
+                              key={`${selectedTl.entry.item.id}-fade-out`}
                               id="tl-item-fade-out"
-                              type="number"
+                              label="Fade out (s)"
                               min={0}
                               step={0.1}
                               value={Math.round((selectedTl.entry.item.fadeOutSec ?? 0) * 100) / 100}
-                              disabled={exporting}
-                              onChange={(e) => {
-                                const value = Number(e.target.value);
-                                if (Number.isFinite(value)) {
-                                  updateTlItem(selectedTl.trackIndex, selectedTl.entry.item.id, { fadeOutSec: value });
-                                }
+                              isDisabled={exporting}
+                              hasNumberSteppers
+                              onChange={(value) => {
+                                updateTlItem(selectedTl.trackIndex, selectedTl.entry.item.id, { fadeOutSec: value });
                               }}
                             />
                           </div>
@@ -3824,80 +3800,72 @@ export default function App() {
                         </Text>
                         <div className="field-row">
                           <div className="field">
-                            <label htmlFor="tl-item-trim-start">Start (s)</label>
-                            <input
+                            <NumberInput
+                              key={`${selectedTl.entry.item.id}-trim-start`}
                               id="tl-item-trim-start"
-                              type="number"
+                              label="Start (s)"
                               min={0}
                               max={selectedTl.entry.clip.meta.durationSec}
                               step={0.1}
                               value={Math.round(selectedTl.entry.item.trim.startSec * 100) / 100}
-                              disabled={exporting}
-                              onChange={(e) => {
-                                const value = Number(e.target.value);
-                                if (Number.isFinite(value)) {
-                                  applyItemTrim(selectedTl.trackIndex, selectedTl.entry, {
-                                    ...selectedTl.entry.item.trim,
-                                    startSec: value,
-                                  });
-                                }
+                              isDisabled={exporting}
+                              hasNumberSteppers
+                              onChange={(value) => {
+                                applyItemTrim(selectedTl.trackIndex, selectedTl.entry, {
+                                  ...selectedTl.entry.item.trim,
+                                  startSec: value,
+                                });
                               }}
                             />
                           </div>
                           <div className="field">
-                            <label htmlFor="tl-item-trim-end">End (s)</label>
-                            <input
+                            <NumberInput
+                              key={`${selectedTl.entry.item.id}-trim-end`}
                               id="tl-item-trim-end"
-                              type="number"
+                              label="End (s)"
                               min={0}
                               max={selectedTl.entry.clip.meta.durationSec}
                               step={0.1}
                               value={Math.round(selectedTl.entry.item.trim.endSec * 100) / 100}
-                              disabled={exporting}
-                              onChange={(e) => {
-                                const value = Number(e.target.value);
-                                if (Number.isFinite(value)) {
-                                  applyItemTrim(selectedTl.trackIndex, selectedTl.entry, {
-                                    ...selectedTl.entry.item.trim,
-                                    endSec: value,
-                                  });
-                                }
+                              isDisabled={exporting}
+                              hasNumberSteppers
+                              onChange={(value) => {
+                                applyItemTrim(selectedTl.trackIndex, selectedTl.entry, {
+                                  ...selectedTl.entry.item.trim,
+                                  endSec: value,
+                                });
                               }}
                             />
                           </div>
                         </div>
                         <div className="field-row">
                           <div className="field">
-                            <label htmlFor="tl-item-fade-in">Fade in (s)</label>
-                            <input
+                            <NumberInput
+                              key={`${selectedTl.entry.item.id}-fade-in`}
                               id="tl-item-fade-in"
-                              type="number"
+                              label="Fade in (s)"
                               min={0}
                               step={0.1}
                               value={Math.round((selectedTl.entry.item.fadeInSec ?? 0) * 100) / 100}
-                              disabled={exporting}
-                              onChange={(e) => {
-                                const value = Number(e.target.value);
-                                if (Number.isFinite(value)) {
-                                  updateTlItem(selectedTl.trackIndex, selectedTl.entry.item.id, { fadeInSec: value });
-                                }
+                              isDisabled={exporting}
+                              hasNumberSteppers
+                              onChange={(value) => {
+                                updateTlItem(selectedTl.trackIndex, selectedTl.entry.item.id, { fadeInSec: value });
                               }}
                             />
                           </div>
                           <div className="field">
-                            <label htmlFor="tl-item-fade-out">Fade out (s)</label>
-                            <input
+                            <NumberInput
+                              key={`${selectedTl.entry.item.id}-fade-out`}
                               id="tl-item-fade-out"
-                              type="number"
+                              label="Fade out (s)"
                               min={0}
                               step={0.1}
                               value={Math.round((selectedTl.entry.item.fadeOutSec ?? 0) * 100) / 100}
-                              disabled={exporting}
-                              onChange={(e) => {
-                                const value = Number(e.target.value);
-                                if (Number.isFinite(value)) {
-                                  updateTlItem(selectedTl.trackIndex, selectedTl.entry.item.id, { fadeOutSec: value });
-                                }
+                              isDisabled={exporting}
+                              hasNumberSteppers
+                              onChange={(value) => {
+                                updateTlItem(selectedTl.trackIndex, selectedTl.entry.item.id, { fadeOutSec: value });
                               }}
                             />
                           </div>
@@ -3915,39 +3883,36 @@ export default function App() {
                         </Text>
                         <div className="field-row">
                           <div className="field">
-                            <label htmlFor="tl-item-start">Start (s)</label>
-                            <input
+                            <NumberInput
+                              key={`${selectedTl.entry.item.id}-start`}
                               id="tl-item-start"
-                              type="number"
+                              label="Start (s)"
                               min={0}
                               step={0.1}
                               value={Math.round(selectedTl.entry.item.startSec * 10) / 10}
-                              disabled={exporting}
-                              onChange={(e) => {
-                                const value = Number(e.target.value);
-                                if (Number.isFinite(value)) {
-                                  updateTlItem(selectedTl.trackIndex, selectedTl.entry.item.id, {
-                                    startSec: Math.max(0, value),
-                                  });
-                                }
+                              isDisabled={exporting}
+                              hasNumberSteppers
+                              onChange={(value) => {
+                                updateTlItem(selectedTl.trackIndex, selectedTl.entry.item.id, {
+                                  startSec: Math.max(0, value),
+                                });
                               }}
                             />
                           </div>
                           {(["x", "y", "width", "height"] as const).map((field) => (
                             <div className="field" key={field}>
-                              <label htmlFor={`tl-rect-${field}`}>
-                                {field === "width" ? "Width" : field === "height" ? "Height" : field.toUpperCase()}
-                              </label>
-                              <input
+                              <NumberInput
+                                key={`${selectedTl.entry.item.id}-rect-${field}`}
                                 id={`tl-rect-${field}`}
-                                type="number"
+                                label={field === "width" ? "Width" : field === "height" ? "Height" : field.toUpperCase()}
                                 min={0}
                                 value={Math.round(selectedTl.entry.item.rect?.[field] ?? 0)}
-                                disabled={exporting}
-                                onChange={(e) => {
-                                  const value = Number(e.target.value);
+                                isDisabled={exporting}
+                                hasNumberSteppers
+                                isIntegerOnly
+                                onChange={(value) => {
                                   const rect = selectedTl.entry.item.rect;
-                                  if (!Number.isFinite(value) || !rect) return;
+                                  if (!rect) return;
                                   const nextRect = { ...rect, [field]: value };
                                   nextRect.width = Math.max(16, nextRect.width);
                                   nextRect.height = Math.max(16, nextRect.height);
@@ -3963,22 +3928,20 @@ export default function App() {
                           <>
                             <div className="field-row">
                               <div className="field">
-                                <label htmlFor="overlay-item-gain">Gain (0–2)</label>
-                                <input
+                                <NumberInput
+                                  key={`${selectedTl.entry.item.id}-gain`}
                                   id="overlay-item-gain"
-                                  type="number"
+                                  label="Gain (0–2)"
                                   min={0}
                                   max={2}
                                   step={0.05}
                                   value={Math.round((selectedTl.entry.item.gain ?? 1) * 100) / 100}
-                                  disabled={exporting}
-                                  onChange={(e) => {
-                                    const value = Number(e.target.value);
-                                    if (Number.isFinite(value)) {
-                                      updateTlItem(selectedTl.trackIndex, selectedTl.entry.item.id, {
-                                        gain: Math.max(0, Math.min(2, value)),
-                                      });
-                                    }
+                                  isDisabled={exporting}
+                                  hasNumberSteppers
+                                  onChange={(value) => {
+                                    updateTlItem(selectedTl.trackIndex, selectedTl.entry.item.id, {
+                                      gain: Math.max(0, Math.min(2, value)),
+                                    });
                                   }}
                                 />
                               </div>
@@ -4030,42 +3993,38 @@ export default function App() {
                               <>
                                 <div className="field-row">
                                   <div className="field">
-                                    <label htmlFor="chroma-tolerance">Tolerance (0–1)</label>
-                                    <input
+                                    <NumberInput
+                                      key={`${selectedTl.entry.item.id}-chroma-tolerance`}
                                       id="chroma-tolerance"
-                                      type="number"
+                                      label="Tolerance (0–1)"
                                       min={0}
                                       max={1}
                                       step={0.05}
-                                      value={selectedChromaKey.tolerance}
-                                      disabled={exporting}
-                                      onChange={(e) => {
-                                        const value = Number(e.target.value);
-                                        if (Number.isFinite(value)) {
-                                          updateSelectedChromaKey({
-                                            tolerance: Math.max(0, Math.min(1, value)),
-                                          });
-                                        }
+                                      value={Math.round(selectedChromaKey.tolerance * 100) / 100}
+                                      isDisabled={exporting}
+                                      hasNumberSteppers
+                                      onChange={(value) => {
+                                        updateSelectedChromaKey({
+                                          tolerance: Math.max(0, Math.min(1, value)),
+                                        });
                                       }}
                                     />
                                   </div>
                                   <div className="field">
-                                    <label htmlFor="chroma-softness">Softness (0–1)</label>
-                                    <input
+                                    <NumberInput
+                                      key={`${selectedTl.entry.item.id}-chroma-softness`}
                                       id="chroma-softness"
-                                      type="number"
+                                      label="Softness (0–1)"
                                       min={0}
                                       max={1}
                                       step={0.05}
-                                      value={selectedChromaKey.softness}
-                                      disabled={exporting}
-                                      onChange={(e) => {
-                                        const value = Number(e.target.value);
-                                        if (Number.isFinite(value)) {
-                                          updateSelectedChromaKey({
-                                            softness: Math.max(0, Math.min(1, value)),
-                                          });
-                                        }
+                                      value={Math.round(selectedChromaKey.softness * 100) / 100}
+                                      isDisabled={exporting}
+                                      hasNumberSteppers
+                                      onChange={(value) => {
+                                        updateSelectedChromaKey({
+                                          softness: Math.max(0, Math.min(1, value)),
+                                        });
                                       }}
                                     />
                                   </div>
@@ -4229,13 +4188,15 @@ export default function App() {
             <div className="field-row">
               {(["x", "y", "width", "height"] as const).map((field) => (
                 <div className="field" key={field}>
-                  <label htmlFor={`crop-${field}`}>{field === "width" ? "Width" : field === "height" ? "Height" : field.toUpperCase()}</label>
-                  <input
+                  <NumberInput
+                    key={`${drawerItem?.item.id ?? cropClip.id}-crop-${field}`}
                     id={`crop-${field}`}
-                    type="number"
+                    label={field === "width" ? "Width" : field === "height" ? "Height" : field.toUpperCase()}
                     min={0}
                     value={Math.round(drawerCropRect?.[field] ?? 0)}
-                    onChange={(e) => updateField(field, e.target.value)}
+                    hasNumberSteppers
+                    isIntegerOnly
+                    onChange={(value) => updateField(field, value)}
                   />
                 </div>
               ))}
@@ -4253,20 +4214,18 @@ export default function App() {
                 <Text type="supporting">Duration — timeline item (V{drawerItem.trackIndex + 1})</Text>
                 <div className="field-row">
                   <div className="field">
-                    <label htmlFor="drawer-item-duration">Duration (s)</label>
-                    <input
+                    <NumberInput
+                      key={`${drawerItem.item.id}-duration`}
                       id="drawer-item-duration"
-                      type="number"
+                      label="Duration (s)"
                       min={0.1}
                       step={0.1}
                       value={Math.round((drawerItem.item.durationSec ?? DEFAULT_IMAGE_DURATION_SEC) * 100) / 100}
-                      onChange={(e) => {
-                        const value = Number(e.target.value);
-                        if (Number.isFinite(value)) {
-                          updateTlItem(drawerItem.trackIndex, drawerItem.item.id, {
-                            durationSec: Math.max(0.1, Math.round(value * 1000) / 1000),
-                          });
-                        }
+                      hasNumberSteppers
+                      onChange={(value) => {
+                        updateTlItem(drawerItem.trackIndex, drawerItem.item.id, {
+                          durationSec: Math.max(0.1, Math.round(value * 1000) / 1000),
+                        });
                       }}
                     />
                   </div>
@@ -4281,27 +4240,29 @@ export default function App() {
             </Text>
             <div className="field-row">
               <div className="field">
-                <label htmlFor="drawer-trim-start">Start (s)</label>
-                <input
+                <NumberInput
+                  key={`${drawerItem?.item.id ?? cropClip.id}-trim-start`}
                   id="drawer-trim-start"
-                  type="number"
+                  label="Start (s)"
                   min={0}
                   max={cropClip.meta.durationSec}
                   step={0.1}
                   value={Math.round(drawerTrim.startSec * 100) / 100}
-                  onChange={(e) => updateDrawerTrimField("startSec", e.target.value)}
+                  hasNumberSteppers
+                  onChange={(value) => updateDrawerTrimField("startSec", value)}
                 />
               </div>
               <div className="field">
-                <label htmlFor="drawer-trim-end">End (s)</label>
-                <input
+                <NumberInput
+                  key={`${drawerItem?.item.id ?? cropClip.id}-trim-end`}
                   id="drawer-trim-end"
-                  type="number"
+                  label="End (s)"
                   min={0}
                   max={cropClip.meta.durationSec}
                   step={0.1}
                   value={Math.round(drawerTrim.endSec * 100) / 100}
-                  onChange={(e) => updateDrawerTrimField("endSec", e.target.value)}
+                  hasNumberSteppers
+                  onChange={(value) => updateDrawerTrimField("endSec", value)}
                 />
               </div>
             </div>
@@ -4341,19 +4302,17 @@ export default function App() {
             />
             <div className="field-row">
               <div className="field">
-                <label htmlFor="text-font-size">Font size (% of height)</label>
-                <input
+                <NumberInput
+                  key={`${drawerTextItem.item.id}-font-size`}
                   id="text-font-size"
-                  type="number"
+                  label="Font size (% of height)"
                   min={2}
                   max={20}
                   step={0.5}
                   value={drawerTextStyle.fontSizePct}
-                  onChange={(e) => {
-                    const value = Number(e.target.value);
-                    if (Number.isFinite(value)) {
-                      updateDrawerTextStyle({ fontSizePct: Math.max(2, Math.min(20, value)) });
-                    }
+                  hasNumberSteppers
+                  onChange={(value) => {
+                    updateDrawerTextStyle({ fontSizePct: Math.max(2, Math.min(20, value)) });
                   }}
                 />
               </div>
@@ -4367,20 +4326,18 @@ export default function App() {
                 />
               </div>
               <div className="field">
-                <label htmlFor="text-duration">Duration (s)</label>
-                <input
+                <NumberInput
+                  key={`${drawerTextItem.item.id}-duration`}
                   id="text-duration"
-                  type="number"
+                  label="Duration (s)"
                   min={0.1}
                   step={0.1}
                   value={Math.round((drawerTextItem.item.durationSec ?? DEFAULT_IMAGE_DURATION_SEC) * 100) / 100}
-                  onChange={(e) => {
-                    const value = Number(e.target.value);
-                    if (Number.isFinite(value)) {
-                      updateTlItem(drawerTextItem.trackIndex, drawerTextItem.item.id, {
-                        durationSec: Math.max(0.1, Math.round(value * 1000) / 1000),
-                      });
-                    }
+                  hasNumberSteppers
+                  onChange={(value) => {
+                    updateTlItem(drawerTextItem.trackIndex, drawerTextItem.item.id, {
+                      durationSec: Math.max(0.1, Math.round(value * 1000) / 1000),
+                    });
                   }}
                 />
               </div>
